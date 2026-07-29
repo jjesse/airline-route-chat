@@ -7,11 +7,12 @@ from route_finder import (
     load_graph,
     find_routes,
     find_shortest_by_time,
-    format_routes,
     format_duration,
     extract_airports,
     visualize_route,
     visualize_full_network,
+    clamp_max_stops,
+    MAX_STOPS,
 )
 
 st.set_page_config(
@@ -49,7 +50,14 @@ with st.sidebar:
     st.header("Controls")
     st.success(f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights")
 
-    max_stops = st.slider("Max stops (for multi-leg search)", 0, 4, 3)
+    max_stops = st.slider(
+        "Max stops (for multi-leg search)",
+        min_value=0,
+        max_value=MAX_STOPS,
+        value=3,
+    )
+    max_stops = clamp_max_stops(max_stops)
+
     show_limit = st.slider("Max routes to list", 1, 10, 5)
     prefer_fastest = st.toggle("Prefer fastest by flight time", value=False)
 
@@ -67,6 +75,7 @@ with st.sidebar:
         - City names and IATA codes both work
         """
     )
+    st.caption("See SECURITY.md for threat model & limits.")
 
 # ---------------------------------------------------------------------------
 # Full network view (optional)
@@ -105,13 +114,11 @@ for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-        # If this assistant message has routes, offer visualization
         if msg.get("routes"):
             routes = msg["routes"]
             origin = msg.get("origin")
             dest = msg.get("dest")
 
-            # Quick summary table
             rows = []
             for i, r in enumerate(routes[:show_limit], 1):
                 rows.append({
@@ -122,7 +129,6 @@ for idx, msg in enumerate(st.session_state.messages):
                 })
             st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
-            # Route picker + visualization
             options = [
                 f"{i}. {r['route']}  ({format_duration(r.get('total_duration'))})"
                 for i, r in enumerate(routes[:show_limit], 1)
@@ -143,7 +149,6 @@ for idx, msg in enumerate(st.session_state.messages):
             )
             st.pyplot(fig, use_container_width=True)
 
-            # Leg details
             with st.expander("Leg details", expanded=False):
                 for leg in chosen["legs"]:
                     planes = ", ".join(leg["planes"]) if leg["planes"] else "?"
@@ -157,6 +162,11 @@ for idx, msg in enumerate(st.session_state.messages):
 # ---------------------------------------------------------------------------
 
 if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DEN)"):
+    # Extra length guard (also enforced inside extract_airports)
+    if len(prompt) > 500:
+        st.warning("Query is too long. Please keep it under 500 characters.")
+        st.stop()
+
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
@@ -203,5 +213,4 @@ if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DE
         "dest": dest,
     })
 
-    # Force a rerun so the new message (with viz) renders in the loop above
     st.rerun()
