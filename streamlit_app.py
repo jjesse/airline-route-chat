@@ -1,79 +1,207 @@
-"""Simple Streamlit chat UI for the airline route finder."""
+"""Streamlit chat + visualization UI for the airline route finder."""
 
 import streamlit as st
-from route_finder import load_graph, find_routes, format_routes
+import pandas as pd
 
-st.set_page_config(page_title="Airline Route Chat", page_icon="✈️", layout="centered")
+from route_finder import (
+    load_graph,
+    find_routes,
+    find_shortest_by_time,
+    format_routes,
+    format_duration,
+    extract_airports,
+    visualize_route,
+    visualize_full_network,
+)
+
+st.set_page_config(
+    page_title="Airline Route Chat",
+    page_icon="✈️",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 st.title("✈️ Airline Route Chat")
-st.caption("Ask for routes between airports using only the flights.csv data source.")
+st.caption(
+    "Ask for routes in plain English. Visualizations highlight the path you choose. "
+    "Data source: flights.csv only."
+)
 
-# Load graph once and cache it
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
 @st.cache_resource
 def get_graph():
     return load_graph("flights.csv")
 
 try:
     G = get_graph()
-    st.sidebar.success(f"Loaded {G.number_of_nodes()} airports · {G.number_of_edges()} flights")
 except Exception as e:
     st.error(f"Could not load flights.csv: {e}")
     st.stop()
 
-# Sidebar controls
-max_stops = st.sidebar.slider("Max stops", min_value=0, max_value=4, value=3)
-show_limit = st.sidebar.slider("Max routes to show", min_value=1, max_value=10, value=5)
+# ---------------------------------------------------------------------------
+# Sidebar
+# ---------------------------------------------------------------------------
 
+with st.sidebar:
+    st.header("Controls")
+    st.success(f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights")
+
+    max_stops = st.slider("Max stops (for multi-leg search)", 0, 4, 3)
+    show_limit = st.slider("Max routes to list", 1, 10, 5)
+    prefer_fastest = st.toggle("Prefer fastest by flight time", value=False)
+
+    st.divider()
+    if st.button("Show full network map", use_container_width=True):
+        st.session_state["show_full_network"] = True
+
+    st.divider()
+    st.markdown("**Tips**")
+    st.markdown(
+        """
+        - `How do I get from Detroit to Denver?`
+        - `ORD to LAX`
+        - `fastest Atlanta to Seattle`
+        - City names and IATA codes both work
+        """
+    )
+
+# ---------------------------------------------------------------------------
+# Full network view (optional)
+# ---------------------------------------------------------------------------
+
+if st.session_state.get("show_full_network"):
+    with st.expander("Full flight network", expanded=True):
+        fig = visualize_full_network(G)
+        st.pyplot(fig, use_container_width=True)
+        if st.button("Hide network map"):
+            st.session_state["show_full_network"] = False
+            st.rerun()
+
+# ---------------------------------------------------------------------------
 # Chat history
+# ---------------------------------------------------------------------------
+
 if "messages" not in st.session_state:
     st.session_state.messages = [
         {
             "role": "assistant",
-            "content": "Hi! Ask me something like:\n- How do I get from DTW to DEN?\n- ORD to LAX\n- Is there a route between ATL and SEA?",
+            "content": (
+                "Hi! Ask me something like:\n"
+                "- How do I get from Detroit to Denver?\n"
+                "- ORD to LAX\n"
+                "- fastest from ATL to SEA\n\n"
+                "I can show a visual map of any route you pick."
+            ),
+            "routes": None,
+            "origin": None,
+            "dest": None,
         }
     ]
 
-# Display history
-for msg in st.session_state.messages:
+for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
+        # If this assistant message has routes, offer visualization
+        if msg.get("routes"):
+            routes = msg["routes"]
+            origin = msg.get("origin")
+            dest = msg.get("dest")
+
+            # Quick summary table
+            rows = []
+            for i, r in enumerate(routes[:show_limit], 1):
+                rows.append({
+                    "#": i,
+                    "Route": r["route"],
+                    "Stops": r["stops"],
+                    "Total time": format_duration(r.get("total_duration")),
+                })
+            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+            # Route picker + visualization
+            options = [
+                f"{i}. {r['route']}  ({format_duration(r.get('total_duration'))})"
+                for i, r in enumerate(routes[:show_limit], 1)
+            ]
+            choice = st.selectbox(
+                "Visualize a route",
+                options=options,
+                key=f"viz_select_{idx}",
+                index=0,
+            )
+            chosen_idx = options.index(choice)
+            chosen = routes[chosen_idx]
+
+            fig = visualize_route(
+                G,
+                chosen,
+                title=f"{origin} → {dest}",
+            )
+            st.pyplot(fig, use_container_width=True)
+
+            # Leg details
+            with st.expander("Leg details", expanded=False):
+                for leg in chosen["legs"]:
+                    planes = ", ".join(leg["planes"]) if leg["planes"] else "?"
+                    dur = format_duration(leg.get("duration"))
+                    st.markdown(
+                        f"- **{leg['from']} → {leg['to']}**  ·  {planes}  ·  {dur}"
+                    )
+
+# ---------------------------------------------------------------------------
 # Chat input
-if prompt := st.chat_input("Ask for a route (e.g. DTW to DEN)"):
-    # Show user message
+# ---------------------------------------------------------------------------
+
+if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DEN)"):
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    # Very simple extraction
-    import re
-    q = prompt.upper()
-    origin = dest = None
-
-    match = re.search(r"FROM\s+([A-Z0-9]{3})\s+TO\s+([A-Z0-9]{3})", q)
-    if match:
-        origin, dest = match.group(1), match.group(2)
-    else:
-        match = re.search(r"\b([A-Z0-9]{3})\s+TO\s+([A-Z0-9]{3})\b", q)
-        if match:
-            origin, dest = match.group(1), match.group(2)
-        else:
-            match = re.search(r"BETWEEN\s+([A-Z0-9]{3})\s+AND\s+([A-Z0-9]{3})", q)
-            if match:
-                origin, dest = match.group(1), match.group(2)
+    origin, dest = extract_airports(prompt)
 
     if not origin or not dest:
         reply = (
-            "I need two 3-letter airport codes.\n"
-            "Try: **How do I get from DTW to DEN?** or just **DTW to DEN**"
+            "I need two airports (IATA code or city name).\n\n"
+            "Try: **How do I get from Detroit to Denver?**  or  **DTW to LAX**"
         )
+        routes = None
     else:
-        routes = find_routes(G, origin, dest, max_stops=max_stops)
-        if not routes:
-            reply = f"No route found from **{origin}** to **{dest}** within {max_stops} stops."
-        else:
-            reply = format_routes(routes, limit=show_limit)
+        want_fastest = prefer_fastest or any(
+            w in prompt.lower()
+            for w in ("fastest", "shortest", "quickest", "least time", "by time")
+        )
 
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    with st.chat_message("assistant"):
-        st.markdown(reply)
+        if want_fastest:
+            best = find_shortest_by_time(G, origin, dest)
+            routes = [best] if best else []
+            if not routes:
+                reply = f"No timed route found from **{origin}** to **{dest}**."
+            else:
+                reply = f"Fastest route by flight time from **{origin}** to **{dest}**:"
+        else:
+            routes = find_routes(G, origin, dest, max_stops=max_stops)
+            if not routes:
+                reply = (
+                    f"No route found from **{origin}** to **{dest}** "
+                    f"within {max_stops} stops."
+                )
+            else:
+                reply = (
+                    f"Found **{len(routes)}** route(s) from **{origin}** to **{dest}** "
+                    f"(showing up to {show_limit}). Pick one below to visualize."
+                )
+
+    st.session_state.messages.append({
+        "role": "assistant",
+        "content": reply,
+        "routes": routes,
+        "origin": origin,
+        "dest": dest,
+    })
+
+    # Force a rerun so the new message (with viz) renders in the loop above
+    st.rerun()
