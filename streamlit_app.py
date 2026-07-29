@@ -1,4 +1,4 @@
-"""Streamlit chat + visualization UI for the airline route finder."""
+"""Streamlit chat + interactive visualization UI for the airline route finder."""
 
 import streamlit as st
 import pandas as pd
@@ -9,8 +9,9 @@ from route_finder import (
     find_shortest_by_time,
     format_duration,
     extract_airports,
-    visualize_route,
-    visualize_full_network,
+    visualize_route_plotly,
+    visualize_route_timeline_plotly,
+    visualize_full_network_plotly,
     clamp_max_stops,
     MAX_STOPS,
 )
@@ -24,7 +25,7 @@ st.set_page_config(
 
 st.title("✈️ Airline Route Chat")
 st.caption(
-    "Ask for routes in plain English. Visualizations highlight the path you choose. "
+    "Ask for routes in plain English. Interactive maps highlight the path you choose. "
     "Data source: flights.csv only."
 )
 
@@ -75,16 +76,19 @@ with st.sidebar:
         - City names and IATA codes both work
         """
     )
-    st.caption("See SECURITY.md for threat model & limits.")
+    st.caption("Hover nodes & edges for details. Zoom/pan the maps.")
 
 # ---------------------------------------------------------------------------
 # Full network view (optional)
 # ---------------------------------------------------------------------------
 
 if st.session_state.get("show_full_network"):
-    with st.expander("Full flight network", expanded=True):
-        fig = visualize_full_network(G)
-        st.pyplot(fig, use_container_width=True)
+    with st.expander("Full flight network (interactive)", expanded=True):
+        fig = visualize_full_network_plotly(G)
+        st.plotly_chart(fig, use_container_width=True, config={
+            "displayModeBar": True,
+            "scrollZoom": True,
+        })
         if st.button("Hide network map"):
             st.session_state["show_full_network"] = False
             st.rerun()
@@ -102,7 +106,7 @@ if "messages" not in st.session_state:
                 "- How do I get from Detroit to Denver?\n"
                 "- ORD to LAX\n"
                 "- fastest from ATL to SEA\n\n"
-                "I can show a visual map of any route you pick."
+                "Pick a route below to explore an **interactive** map and timeline."
             ),
             "routes": None,
             "origin": None,
@@ -142,14 +146,35 @@ for idx, msg in enumerate(st.session_state.messages):
             chosen_idx = options.index(choice)
             chosen = routes[chosen_idx]
 
-            fig = visualize_route(
-                G,
-                chosen,
-                title=f"{origin} → {dest}",
-            )
-            st.pyplot(fig, use_container_width=True)
+            tab_map, tab_time, tab_legs = st.tabs([
+                "🗺️ Route map",
+                "⏱️ Leg timeline",
+                "📋 Leg details",
+            ])
 
-            with st.expander("Leg details", expanded=False):
+            with tab_map:
+                fig_map = visualize_route_plotly(
+                    G,
+                    chosen,
+                    title=f"{origin} → {dest}",
+                )
+                st.plotly_chart(fig_map, use_container_width=True, config={
+                    "displayModeBar": True,
+                    "scrollZoom": True,
+                })
+                st.caption(
+                    "Green = origin · Orange = destination · Cyan edges = your path. "
+                    "Hover for aircraft & duration."
+                )
+
+            with tab_time:
+                fig_time = visualize_route_timeline_plotly(
+                    chosen,
+                    title=f"{origin} → {dest}",
+                )
+                st.plotly_chart(fig_time, use_container_width=True)
+
+            with tab_legs:
                 for leg in chosen["legs"]:
                     planes = ", ".join(leg["planes"]) if leg["planes"] else "?"
                     dur = format_duration(leg.get("duration"))
@@ -162,7 +187,6 @@ for idx, msg in enumerate(st.session_state.messages):
 # ---------------------------------------------------------------------------
 
 if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DEN)"):
-    # Extra length guard (also enforced inside extract_airports)
     if len(prompt) > 500:
         st.warning("Query is too long. Please keep it under 500 characters.")
         st.stop()
@@ -202,7 +226,7 @@ if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DE
             else:
                 reply = (
                     f"Found **{len(routes)}** route(s) from **{origin}** to **{dest}** "
-                    f"(showing up to {show_limit}). Pick one below to visualize."
+                    f"(showing up to {show_limit}). Pick one below to explore."
                 )
 
     st.session_state.messages.append({
