@@ -17,6 +17,7 @@ Ask questions in plain English (“How do I get from Detroit to Denver?”) and 
 - CLI and Streamlit web UI
 - Docker support (runs as non-root)
 - Input sanitization and resource limits (see [SECURITY.md](SECURITY.md))
+- Automated test suite (pytest)
 
 ---
 
@@ -47,6 +48,24 @@ docker run -p 8501:8501 airline-route-chat
 Then open http://localhost:8501
 
 The container runs as an unprivileged user (`appuser`).
+
+---
+
+## Running tests
+
+```bash
+pip install -r requirements.txt
+pytest
+```
+
+Tests cover:
+
+- Airport code sanitization and city-name resolution
+- Natural-language query extraction
+- CSV loading, validation, and security limits
+- Multi-leg and duration-weighted path finding
+- Formatting helpers
+- Visualization smoke tests (headless matplotlib)
 
 ---
 
@@ -109,16 +128,17 @@ City names currently recognized: Detroit, Chicago / O'Hare, Denver, Los Angeles 
 
 ## Project layout
 
-| File               | Purpose                                      |
+| File / dir         | Purpose                                      |
 |--------------------|----------------------------------------------|
 | `route_finder.py`  | Graph loading, path finding, NLP, viz helpers |
 | `app.py`           | CLI chat interface                           |
 | `streamlit_app.py` | Web chat + route visualizations              |
 | `flights.csv`      | Sample data (replace with yours)             |
+| `tests/`           | pytest suite                                 |
 | `requirements.txt` | Python dependencies                          |
 | `Dockerfile`       | Non-root container image                     |
 | `SECURITY.md`      | Threat model and hardening notes             |
-| `.dockerignore`    | Keep image lean                              |
+| `pytest.ini`       | Test configuration                           |
 
 ---
 
