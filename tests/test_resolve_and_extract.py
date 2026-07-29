@@ -9,11 +9,15 @@ class TestSanitizeCode:
         assert _sanitize_code("ord") == "ORD"
         assert _sanitize_code("  lax  ") == "LAX"
 
+    def test_strips_punctuation_when_result_is_valid(self):
+        # Non-alnum is removed; remaining 3-char codes are accepted
+        assert _sanitize_code("DTW!") == "DTW"
+        assert _sanitize_code("LAX.") == "LAX"
+
     def test_rejects_bad(self):
         assert _sanitize_code("") is None
         assert _sanitize_code("AB") is None
         assert _sanitize_code("ABCD") is None
-        assert _sanitize_code("DTW!") is None
         assert _sanitize_code("../etc") is None
         assert _sanitize_code(None) is None  # type: ignore[arg-type]
 
@@ -29,6 +33,7 @@ class TestResolveAirport:
         assert resolve_airport("Los Angeles") == "LAX"
         assert resolve_airport("LA") == "LAX"
         assert resolve_airport("Seattle") == "SEA"
+        assert resolve_airport("San Francisco") == "SFO"
 
     def test_rejects_garbage(self):
         assert resolve_airport("") is None
@@ -44,6 +49,7 @@ class TestExtractAirports:
     def test_from_to_cities(self):
         assert extract_airports("from Detroit to Denver") == ("DTW", "DEN")
         assert extract_airports("How do I get from Chicago to Los Angeles?") == ("ORD", "LAX")
+        assert extract_airports("from San Francisco to Minneapolis") == ("SFO", "MSP")
 
     def test_simple_to(self):
         assert extract_airports("ORD to LAX") == ("ORD", "LAX")
