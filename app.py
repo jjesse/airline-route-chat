@@ -7,7 +7,7 @@ from route_finder import (
     find_shortest_by_time,
     format_routes,
     extract_airports,
-    format_duration,
+    clamp_max_stops,
 )
 
 
@@ -45,6 +45,10 @@ def main():
             print("Bye!")
             break
 
+        if len(query) > 500:
+            print("Bot: Query too long (max 500 characters).")
+            continue
+
         origin, dest = extract_airports(query)
 
         if not origin or not dest:
@@ -67,7 +71,7 @@ def main():
                 print("Bot: Fastest route by flight time:")
                 print(format_routes([best], limit=1))
         else:
-            routes = find_routes(G, origin, dest, max_stops=3)
+            routes = find_routes(G, origin, dest, max_stops=clamp_max_stops(3))
             if not routes:
                 print(f"Bot: No route found from {origin} to {dest} within 3 stops.")
             else:
