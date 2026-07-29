@@ -101,8 +101,10 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
 
     q = query.upper().strip()
 
+    # Destination is greedy up to trailing punctuation / end of string so
+    # multi-word cities like "LOS ANGELES" and "SAN FRANCISCO" are captured.
     m = re.search(
-        r"FROM\s+([A-Z0-9\s']+?)\s+TO\s+([A-Z0-9\s']+?)(?:\s|$|[?.!,])",
+        r"FROM\s+(.+?)\s+TO\s+(.+?)(?:\s*[?.!,]+)?\s*$",
         q,
     )
     if m:
@@ -111,7 +113,7 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
             return o, d
 
     m = re.search(
-        r"BETWEEN\s+([A-Z0-9\s']+?)\s+AND\s+([A-Z0-9\s']+?)(?:\s|$|[?.!,])",
+        r"BETWEEN\s+(.+?)\s+AND\s+(.+?)(?:\s*[?.!,]+)?\s*$",
         q,
     )
     if m:
@@ -407,12 +409,7 @@ def visualize_route_plotly(
     route: Dict[str, Any],
     title: Optional[str] = None,
 ) -> go.Figure:
-    """Interactive Plotly network highlighting one chosen route.
-
-    - Hover airports for degree / role
-    - Hover path edges for duration + aircraft
-    - Zoom / pan / export built-in
-    """
+    """Interactive Plotly network highlighting one chosen route."""
     airports = route.get("airports") or []
     path_set = set(airports)
     path_edges = list(zip(airports[:-1], airports[1:])) if len(airports) >= 2 else []
@@ -437,7 +434,6 @@ def visualize_route_plotly(
     sub = _focused_subgraph(G, airports)
     pos = _spring_pos(sub, seed=42)
 
-    # --- Background edges ---
     bg_x, bg_y = [], []
     for u, v in sub.edges():
         if (u, v) in path_edges:
@@ -456,7 +452,6 @@ def visualize_route_plotly(
         opacity=0.45,
     )
 
-    # --- Path edges (one trace per leg so hover works) ---
     path_traces = []
     for u, v in path_edges:
         if u not in pos or v not in pos:
@@ -482,7 +477,6 @@ def visualize_route_plotly(
             )
         )
 
-    # --- Nodes ---
     def node_trace(nodes, color, size, name, border):
         xs, ys, texts, hovers = [], [], [], []
         for n in nodes:
