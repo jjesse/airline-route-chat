@@ -9,16 +9,18 @@ class TestSanitizeCode:
         assert _sanitize_code("ord") == "ORD"
         assert _sanitize_code("  lax  ") == "LAX"
 
-    def test_strips_punctuation_when_result_is_valid(self):
-        # Non-alnum is removed; remaining 3-char codes are accepted
+    def test_strips_non_alnum_when_result_is_valid(self):
+        # Non-alnum is removed; remaining exactly-3-char codes are accepted
         assert _sanitize_code("DTW!") == "DTW"
         assert _sanitize_code("LAX.") == "LAX"
+        # "../etc" strips to "ETC" which is a valid 3-char code shape
+        assert _sanitize_code("../etc") == "ETC"
 
     def test_rejects_bad(self):
         assert _sanitize_code("") is None
-        assert _sanitize_code("AB") is None
-        assert _sanitize_code("ABCD") is None
-        assert _sanitize_code("../etc") is None
+        assert _sanitize_code("AB") is None          # too short
+        assert _sanitize_code("ABCD") is None        # too long
+        assert _sanitize_code("../passwd") is None   # strips to PASSWD (6 chars)
         assert _sanitize_code(None) is None  # type: ignore[arg-type]
 
 
