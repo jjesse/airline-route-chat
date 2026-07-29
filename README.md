@@ -1,67 +1,129 @@
 # Airline Route Chat
 
-A simple chat-style app that finds direct and multi-leg flight routes from a CSV file of flights.
+A chat-style app that finds **direct and multi-leg flight routes** from a single CSV file of flights.  
+Ask questions in plain English (“How do I get from Detroit to Denver?”) and get ranked itineraries plus **visual route maps**.
 
-**Data source**: A CSV with columns  
-`Originating Airport`, `Destination Airport`, `Airplane Type`
+**Data source is only the CSV** — no external flight APIs.
 
-The app builds a directed graph and uses path finding so you can ask things like:
+---
 
-> How do I get from DTW to DEN?
+## Features
 
-even when there is no direct flight.
+- Multi-leg path finding (fewest stops)
+- **Shortest path by flight time** when `DurationMinutes` is present
+- Natural language + city names (“Detroit”, “Chicago”, “LA” …) as well as IATA codes
+- Rich **visualizations** of any chosen route (dark theme network graph with path highlighted)
+- Full network overview map
+- CLI and Streamlit web UI
+- Docker support
+
+---
 
 ## Quick Start
 
+### Local
+
 ```bash
-# Clone
 git clone https://github.com/jjesse/airline-route-chat.git
 cd airline-route-chat
 
-# Install dependencies
 pip install -r requirements.txt
 
-# Run the CLI chat
+# CLI chat
 python app.py
 
-# Or run the Streamlit web UI
+# Web UI with visualizations (recommended)
 streamlit run streamlit_app.py
 ```
 
+### Docker
+
+```bash
+docker build -t airline-route-chat .
+docker run -p 8501:8501 airline-route-chat
+```
+
+Then open http://localhost:8501
+
+---
+
 ## CSV Format
 
-Place your flight data in `flights.csv` (a sample is included):
+Required columns:
+
+| Column                | Description              |
+|-----------------------|--------------------------|
+| Originating Airport   | 3-letter IATA code       |
+| Destination Airport   | 3-letter IATA code       |
+| Airplane Type         | e.g. A320, B737          |
+
+Optional but recommended:
+
+| Column            | Description                          |
+|-------------------|--------------------------------------|
+| DurationMinutes   | Block time in minutes (for weighted shortest path) |
+
+Example:
 
 ```csv
-Originating Airport,Destination Airport,Airplane Type
-DTW,ORD,A320
-ORD,DEN,B737
-DTW,DEN,A321
+Originating Airport,Destination Airport,Airplane Type,DurationMinutes
+DTW,ORD,A320,70
+ORD,DEN,B737,145
+DTW,DEN,A321,175
 ...
 ```
 
-Airport codes are normalized to uppercase automatically.
+Airport codes are normalized to uppercase. Replace `flights.csv` with your own data — the rest of the app will adapt automatically.
+
+---
+
+## Example queries
+
+```
+How do I get from Detroit to Denver?
+ORD to LAX
+fastest from Atlanta to Seattle
+route between Chicago and Miami
+DTW-SFO
+```
+
+City names currently recognized: Detroit, Chicago / O'Hare, Denver, Los Angeles / LA, Atlanta, Miami, Seattle / SeaTac, San Francisco / SF, Minneapolis.
+
+---
 
 ## How it works
 
-1. Loads the CSV into a NetworkX directed graph.
-2. Each row becomes a directed edge (origin → destination) with airplane type(s) stored on the edge.
-3. Uses `nx.all_simple_paths` to find all routes up to a configurable number of stops.
-4. Returns results sorted by fewest stops first.
+1. **Load** — CSV → NetworkX directed graph. Edges store airplane type(s) and optional duration.
+2. **Parse** — Simple but robust NLP extracts origin & destination (codes or city names).
+3. **Search**
+   - Default: all simple paths up to *N* stops, ranked by stops then total duration.
+   - “Fastest” / toggle: Dijkstra using `DurationMinutes` as edge weight.
+4. **Visualize** — Matplotlib network plot (dark theme) highlighting the selected path in cyan; start = green, end = orange. Duration labels appear on path edges.
 
-## Files
+---
 
-| File | Purpose |
-|------|---------|
-| `app.py` | CLI chat interface |
-| `streamlit_app.py` | Simple web chat UI |
-| `route_finder.py` | Core graph + path finding logic |
-| `flights.csv` | Sample flight data (replace with your own) |
-| `requirements.txt` | Python dependencies |
+## Project layout
 
-## Next ideas
+| File               | Purpose                                      |
+|--------------------|----------------------------------------------|
+| `route_finder.py`  | Graph loading, path finding, NLP, viz helpers |
+| `app.py`           | CLI chat interface                           |
+| `streamlit_app.py` | Web chat + interactive route visualizations  |
+| `flights.csv`      | Sample data (replace with yours)             |
+| `requirements.txt` | Python dependencies                          |
+| `Dockerfile`       | Container image for the Streamlit app        |
+| `.dockerignore`    | Keep image lean                              |
 
-- Add flight times / distances as edge weights and find shortest by time
-- Better natural-language parsing
-- Export itineraries
-- Support for multiple CSVs or live data sources
+---
+
+## Tips for your own data
+
+- Keep IATA codes consistent (always 3 letters, same case is fine — we upper-case them).
+- Adding `DurationMinutes` unlocks the “fastest route” mode and better ranking.
+- Multiple rows for the same origin→destination are merged (union of plane types, shortest duration kept).
+
+---
+
+## License
+
+Use freely for personal / home-lab / demo projects.
