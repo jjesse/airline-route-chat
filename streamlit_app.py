@@ -1,4 +1,4 @@
-"""Streamlit chat + interactive visualization UI for the airline route finder."""
+"""Streamlit chat + interactive geographic visualization UI."""
 
 import streamlit as st
 import pandas as pd
@@ -9,12 +9,11 @@ from route_finder import (
     find_shortest_by_time,
     format_duration,
     extract_airports,
-    visualize_route_plotly,
     visualize_route_timeline_plotly,
-    visualize_full_network_plotly,
     clamp_max_stops,
     MAX_STOPS,
 )
+from geo_viz import visualize_route_plotly, visualize_full_network_plotly
 
 st.set_page_config(
     page_title="Airline Route Chat",
@@ -25,13 +24,9 @@ st.set_page_config(
 
 st.title("✈️ Airline Route Chat")
 st.caption(
-    "Ask for routes in plain English. Interactive maps highlight the path you choose. "
+    "Ask for routes in plain English. Geographic maps show your path on a real map of the US. "
     "Data source: flights.csv only."
 )
-
-# ---------------------------------------------------------------------------
-# Data loading
-# ---------------------------------------------------------------------------
 
 @st.cache_resource
 def get_graph():
@@ -42,10 +37,6 @@ try:
 except Exception as e:
     st.error(f"Could not load flights.csv: {e}")
     st.stop()
-
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
 
 with st.sidebar:
     st.header("Controls")
@@ -76,14 +67,10 @@ with st.sidebar:
         - City names and IATA codes both work
         """
     )
-    st.caption("Hover nodes & edges for details. Zoom/pan the maps.")
-
-# ---------------------------------------------------------------------------
-# Full network view (optional)
-# ---------------------------------------------------------------------------
+    st.caption("Maps use real airport coordinates. Hover edges for aircraft & duration.")
 
 if st.session_state.get("show_full_network"):
-    with st.expander("Full flight network (interactive)", expanded=True):
+    with st.expander("Full flight network (geographic)", expanded=True):
         fig = visualize_full_network_plotly(G)
         st.plotly_chart(fig, use_container_width=True, config={
             "displayModeBar": True,
@@ -92,10 +79,6 @@ if st.session_state.get("show_full_network"):
         if st.button("Hide network map"):
             st.session_state["show_full_network"] = False
             st.rerun()
-
-# ---------------------------------------------------------------------------
-# Chat history
-# ---------------------------------------------------------------------------
 
 if "messages" not in st.session_state:
     st.session_state.messages = [
@@ -106,7 +89,7 @@ if "messages" not in st.session_state:
                 "- How do I get from Detroit to Denver?\n"
                 "- ORD to LAX\n"
                 "- fastest from ATL to SEA\n\n"
-                "Pick a route below to explore an **interactive** map and timeline."
+                "Pick a route to see it on a **geographic map** and timeline."
             ),
             "routes": None,
             "origin": None,
@@ -147,7 +130,7 @@ for idx, msg in enumerate(st.session_state.messages):
             chosen = routes[chosen_idx]
 
             tab_map, tab_time, tab_legs = st.tabs([
-                "🗺️ Route map",
+                "🗺️ Geographic map",
                 "⏱️ Leg timeline",
                 "📋 Leg details",
             ])
@@ -163,7 +146,7 @@ for idx, msg in enumerate(st.session_state.messages):
                     "scrollZoom": True,
                 })
                 st.caption(
-                    "Green = origin · Orange = destination · Cyan edges = your path. "
+                    "Green = origin · Orange = destination · Cyan = your path. "
                     "Hover for aircraft & duration."
                 )
 
@@ -181,10 +164,6 @@ for idx, msg in enumerate(st.session_state.messages):
                     st.markdown(
                         f"- **{leg['from']} → {leg['to']}**  ·  {planes}  ·  {dur}"
                     )
-
-# ---------------------------------------------------------------------------
-# Chat input
-# ---------------------------------------------------------------------------
 
 if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DEN)"):
     if len(prompt) > 500:
