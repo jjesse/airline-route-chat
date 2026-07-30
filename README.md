@@ -1,7 +1,7 @@
 # Airline Route Chat
 
 A chat-style app that finds **direct and multi-leg flight routes** from a single CSV file of flights.  
-Ask questions in plain English (“How do I get from Detroit to Denver?”) and get ranked itineraries plus **interactive route maps**.
+Ask questions in plain English (“How do I get from Detroit to Denver?”) and get ranked itineraries plus **geographic route maps**.
 
 **Data source is only the CSV** — no external flight APIs.
 
@@ -13,9 +13,9 @@ Ask questions in plain English (“How do I get from Detroit to Denver?”) and 
 - **Shortest path by flight time** when `DurationMinutes` is present
 - Natural language + city names (“Detroit”, “Chicago”, “LA” …) as well as IATA codes
 - **Interactive Plotly visualizations**
-  - Route network map (zoom, pan, hover for aircraft & duration)
+  - **Geographic route map** (real lat/lon, coastlines, zoom/pan)
   - Leg duration timeline
-  - Full network overview
+  - Full network overview on a US map
 - CLI and Streamlit web UI
 - Docker support (runs as non-root)
 - Input sanitization and resource limits (see [SECURITY.md](SECURITY.md))
@@ -36,7 +36,7 @@ pip install -r requirements.txt
 # CLI chat
 python app.py
 
-# Web UI with interactive visualizations (recommended)
+# Web UI with geographic maps (recommended)
 streamlit run streamlit_app.py
 ```
 
@@ -49,8 +49,6 @@ docker run -p 8501:8501 airline-route-chat
 
 Then open http://localhost:8501
 
-The container runs as an unprivileged user (`appuser`).
-
 ---
 
 ## Running tests
@@ -60,92 +58,50 @@ pip install -r requirements.txt
 pytest
 ```
 
-Tests cover sanitization, NLP extraction, CSV limits, path finding, formatting, and both matplotlib + Plotly visualization smoke tests.
-
 ---
 
 ## CSV Format
 
-Required columns:
+Required columns: `Originating Airport`, `Destination Airport`, `Airplane Type`  
+Optional: `DurationMinutes`
 
-| Column                | Description              |
-|-----------------------|--------------------------|
-| Originating Airport   | 3-letter IATA code       |
-| Destination Airport   | 3-letter IATA code       |
-| Airplane Type         | e.g. A320, B737          |
+Airport codes are sanitized to 3-letter uppercase. For geographic maps, add coordinates in `airport_coords.py` when you introduce new airports.
 
-Optional but recommended:
-
-| Column            | Description                          |
-|-------------------|--------------------------------------|
-| DurationMinutes   | Block time in minutes (for weighted shortest path) |
-
-Example:
-
-```csv
-Originating Airport,Destination Airport,Airplane Type,DurationMinutes
-DTW,ORD,A320,70
-ORD,DEN,B737,145
-DTW,DEN,A321,175
-...
-```
-
-Airport codes are sanitized and normalized to uppercase. Replace `flights.csv` with your own data — the rest of the app will adapt automatically.
-
-**Limits** (for safety): max ~20k rows, ~2k unique airports, 50 MB file size.
-
----
-
-## Example queries
-
-```
-How do I get from Detroit to Denver?
-ORD to LAX
-fastest from Atlanta to Seattle
-route between Chicago and Miami
-DTW-SFO
-```
-
-City names currently recognized: Detroit, Chicago / O'Hare, Denver, Los Angeles / LA, Atlanta, Miami, Seattle / SeaTac, San Francisco / SF, Minneapolis.
+**Limits**: max ~20k rows, ~2k unique airports, 50 MB file size.
 
 ---
 
 ## How it works
 
-1. **Load** — CSV → NetworkX directed graph (with size/airport caps).
-2. **Parse** — Sanitized NLP extracts origin & destination.
-3. **Search**
-   - Default: all simple paths up to *N* stops (hard-capped at 5).
-   - “Fastest”: Dijkstra using `DurationMinutes`.
+1. **Load** — CSV → NetworkX directed graph.
+2. **Parse** — NLP extracts origin & destination.
+3. **Search** — fewest-stops paths or duration-weighted Dijkstra.
 4. **Visualize (Streamlit)**
-   - **Route map** — interactive Plotly network; green origin, orange destination, cyan path edges; hover for plane type & duration.
-   - **Leg timeline** — horizontal bar chart of each segment’s minutes.
-   - **Full network** — zoomable overview of all airports in the CSV.
-
-Static matplotlib helpers remain available for CLI / export / tests.
+   - **Geographic map** — Plotly `Scattergeo` using lat/lon from `airport_coords.py`
+   - **Leg timeline** — bar chart of segment minutes
+   - **Full network** — all sample airports plotted on a US map
 
 ---
 
 ## Project layout
 
-| File / dir         | Purpose                                      |
-|--------------------|----------------------------------------------|
-| `route_finder.py`  | Graph, path finding, NLP, matplotlib + Plotly viz |
-| `app.py`           | CLI chat interface                           |
-| `streamlit_app.py` | Web chat + interactive charts                |
-| `flights.csv`      | Sample data                                  |
-| `tests/`           | pytest suite                                 |
-| `requirements.txt` | Python dependencies                          |
-| `Dockerfile`       | Non-root container image                     |
-| `SECURITY.md`      | Threat model and hardening notes             |
+| File / dir            | Purpose                                      |
+|-----------------------|----------------------------------------------|
+| `route_finder.py`     | Graph, path finding, NLP, timeline, matplotlib |
+| `geo_viz.py`          | Geographic Plotly maps (`Scattergeo`)        |
+| `airport_coords.py`   | IATA → (lat, lon) lookup                     |
+| `app.py`              | CLI chat                                     |
+| `streamlit_app.py`    | Web chat + maps                              |
+| `flights.csv`         | Sample data                                  |
+| `tests/`              | pytest suite                                 |
+| `Dockerfile`          | Non-root container                           |
+| `SECURITY.md`         | Threat model                                 |
 
 ---
 
 ## Security
 
-This is a **local / demo** tool. Do not expose the Streamlit port to the public internet without authentication.
-
-See **[SECURITY.md](SECURITY.md)** for the full threat model, limits, and recommendations.
+Local / demo tool. See **[SECURITY.md](SECURITY.md)**.
 
 ---
 
