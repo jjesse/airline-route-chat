@@ -5,6 +5,7 @@ Supports:
 - Shortest path by flight duration (DurationMinutes, or estimated from distance)
 - Airport code + common city name resolution
 - Static (matplotlib) and interactive (Plotly) visualizations
+- Game CSV formats (Org/Dest Airport Code, Aircraft, Distance (mi))
 
 Security notes:
 - All airport tokens are strictly sanitized (A-Z0-9 only, length 3)
@@ -66,13 +67,32 @@ DEFAULT_CRUISE_KTS = 440.0
 # Fixed block-time padding for taxi, climb, descent, approach (minutes).
 BLOCK_OVERHEAD_MINUTES = 30.0
 
-# CSV column name patterns (normalized: lower, no spaces/underscores).
+# CSV column name patterns (normalized: lower, no spaces/underscores/parens).
 _DURATION_COLS = {"durationminutes", "duration", "blockminutes", "blocktime", "minutes"}
 _DISTANCE_SM_COLS = {
     "distance", "dist", "miles", "mile", "distancemiles", "statutemiles", "sm",
+    "distancemi", "distancemile", "distancemiiles",
 }
 _DISTANCE_NM_COLS = {
     "nm", "nmi", "nauticalmiles", "distancenm", "distancenmi", "distancenaautical",
+}
+# Prefer code columns (game export) over city-name columns.
+_ORIGIN_CODE_COLS = {
+    "orgairportcode", "originairportcode", "originatingairportcode",
+    "origincode", "fromcode", "origincode", "fromairportcode",
+}
+_DEST_CODE_COLS = {
+    "destairportcode", "destinationairportcode", "destinationcode",
+    "tocode", "destcode", "toairportcode",
+}
+_ORIGIN_NAME_COLS = {
+    "originatingairport", "originairport", "origin", "from", "fromairport",
+}
+_DEST_NAME_COLS = {
+    "destinationairport", "destairport", "destination", "to", "toairport",
+}
+_AIRCRAFT_COLS = {
+    "aircraft", "airplanetype", "airplane", "planettype", "equipment", "ac",
 }
 
 
@@ -261,9 +281,22 @@ def clamp_max_stops(value: int) -> int:
 def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
     """Load flights CSV into a directed graph.
 
+    Recognized columns (extras ignored):
+
+    Origin (prefer code):
+      Org Airport Code | Origin Airport Code | Originating Airport | ...
+    Destination (prefer code):
+      Dest Airport Code | Destination Airport Code | Destination Airport | ...
+    Aircraft:
+      Aircraft | Airplane Type | Equipment | ...
+    Duration (optional):
+      DurationMinutes | Duration | Minutes | ...
+    Distance (optional; used to estimate duration if no minutes):
+      Distance (mi) | Distance | Miles | NM | ...
+
     Duration on each edge comes from, in order:
       1. DurationMinutes (or similar) if present and valid
-      2. Estimated from Distance / Miles / NM using aircraft cruise speed
+      2. Estimated from Distance using aircraft cruise speed
     """
     path = Path(csv_path)
     if not path.is_file():
@@ -275,34 +308,60 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
 
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
+    cols = list(df.columns)
 
     if len(df) > MAX_CSV_ROWS:
         raise ValueError(
             f"CSV has {len(df)} rows; maximum allowed is {MAX_CSV_ROWS}."
         )
 
-    required = {"Originating Airport", "Destination Airport", "Airplane Type"}
-    if not required.issubset(set(df.columns)):
+    origin_col = (
+        _find_column(cols, _ORIGIN_CODE_COLS)
+        or _find_column(cols, _ORIGIN_NAME_COLS)
+    )
+    dest_col = (
+        _find_column(cols, _DEST_CODE_COLS)
+        or _find_column(cols, _DEST_NAME_COLS)
+    )
+    plane_col = _find_column(cols, _AIRCRAFT_COLS)
+
+    if not origin_col or not dest_col:
         raise ValueError(
-            f"CSV must contain columns: {required}. Found: {list(df.columns)}"
+            "CSV must include origin and destination columns. "
+            "Accepted examples: 'Org Airport Code' / 'Dest Airport Code', "
+            "or 'Originating Airport' / 'Destination Airport'. "
+            f"Found: {cols}"
+        )
+    if not plane_col:
+        raise ValueError(
+            "CSV must include an aircraft column "
+            "(e.g. 'Aircraft' or 'Airplane Type'). "
+            f"Found: {cols}"
         )
 
-    duration_col = _find_column(list(df.columns), _DURATION_COLS)
-    distance_nm_col = _find_column(list(df.columns), _DISTANCE_NM_COLS)
-    distance_sm_col = _find_column(list(df.columns), _DISTANCE_SM_COLS)
-    # Prefer explicit NM column over generic "Distance" when both exist.
+    duration_col = _find_column(cols, _DURATION_COLS)
+    distance_nm_col = _find_column(cols, _DISTANCE_NM_COLS)
+    distance_sm_col = _find_column(cols, _DISTANCE_SM_COLS)
     distance_col = distance_nm_col or distance_sm_col
     distance_unit = "nm" if distance_nm_col else "sm"
 
     G = nx.DiGraph()
 
     for _, row in df.iterrows():
-        origin = _sanitize_code(str(row["Originating Airport"]))
-        dest = _sanitize_code(str(row["Destination Airport"]))
+        origin = _sanitize_code(str(row[origin_col]))
+        dest = _sanitize_code(str(row[dest_col]))
+        if not origin or not dest:
+            # City-name columns may need alias resolution
+            if not origin:
+                origin = resolve_airport(str(row[origin_col]))
+            if not dest:
+                dest = resolve_airport(str(row[dest_col]))
         if not origin or not dest:
             continue
 
-        plane_raw = str(row["Airplane Type"]).strip()
+        plane_raw = str(row[plane_col]).strip()
+        if plane_raw.lower() in ("nan", "none", ""):
+            plane_raw = "UNKNOWN"
         plane = re.sub(r"[^A-Za-z0-9\- ]", "", plane_raw)[:MAX_PLANE_TYPE_LEN]
         if not plane:
             plane = "UNKNOWN"
