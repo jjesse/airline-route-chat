@@ -1,10 +1,7 @@
 """Airport coordinates for geographic route maps (lat, lon).
 
-Looks up latitude/longitude from the IATA code using the offline
-`airportsdata` database (thousands of airports worldwide).
-
-A small local override table is kept for deliberate overrides or when
-the package is not installed.
+Looks up latitude/longitude from ICAO (preferred) or IATA codes using the
+offline `airportsdata` database.
 """
 
 from __future__ import annotations
@@ -12,31 +9,35 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Dict, Optional, Tuple
 
-# Optional local overrides (always win over the package database).
-# Values are (lat, lon) with West longitudes negative — e.g. DTW is
-# 42.2124 N, 83.3534 W → (42.2124, -83.3534).
-LOCAL_OVERRIDES: Dict[str, Tuple[float, float]] = {
-    # Intentionally empty by default; add entries only if you need to
-    # force a specific point (e.g. a preferred terminal / ARP).
-}
+# Optional local overrides (always win). Keys may be ICAO or IATA.
+LOCAL_OVERRIDES: Dict[str, Tuple[float, float]] = {}
 
-# Minimal fallback if airportsdata is not installed (sample CSV airports).
+# Minimal fallback for sample network (ICAO + IATA).
 _FALLBACK: Dict[str, Tuple[float, float]] = {
-    "DTW": (42.2124, -83.3534),
-    "ORD": (41.9742, -87.9073),
-    "DEN": (39.8561, -104.6737),
-    "LAX": (33.9425, -118.4081),
-    "ATL": (33.6407, -84.4277),
-    "MIA": (25.7959, -80.2870),
-    "SEA": (47.4502, -122.3088),
-    "SFO": (37.6213, -122.3790),
-    "MSP": (44.8848, -93.2223),
+    "KDTW": (42.2124, -83.3534), "DTW": (42.2124, -83.3534),
+    "KORD": (41.9742, -87.9073), "ORD": (41.9742, -87.9073),
+    "KDEN": (39.8561, -104.6737), "DEN": (39.8561, -104.6737),
+    "KLAX": (33.9425, -118.4081), "LAX": (33.9425, -118.4081),
+    "KATL": (33.6407, -84.4277), "ATL": (33.6407, -84.4277),
+    "KMIA": (25.7959, -80.2870), "MIA": (25.7959, -80.2870),
+    "KSEA": (47.4502, -122.3088), "SEA": (47.4502, -122.3088),
+    "KSFO": (37.6213, -122.3790), "SFO": (37.6213, -122.3790),
+    "KMSP": (44.8848, -93.2223), "MSP": (44.8848, -93.2223),
 }
 
 
 @lru_cache(maxsize=1)
+def _icao_db() -> Dict[str, dict]:
+    try:
+        import airportsdata
+
+        return airportsdata.load("ICAO")
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=1)
 def _iata_db() -> Dict[str, dict]:
-    """Load the IATA-keyed airport database once."""
     try:
         import airportsdata
 
@@ -46,42 +47,70 @@ def _iata_db() -> Dict[str, dict]:
 
 
 def get_airport_coords(code: str) -> Optional[Tuple[float, float]]:
-    """Return (lat, lon) for an IATA code, or None if unknown.
-
-    Lookup order:
-      1. LOCAL_OVERRIDES
-      2. airportsdata offline database (by IATA)
-      3. Built-in sample fallback
-    """
+    """Return (lat, lon) for an ICAO or IATA code, or None if unknown."""
     if not code or not isinstance(code, str):
         return None
 
     key = code.upper().strip()
-    if len(key) != 3 or not key.isalnum():
+    if not (3 <= len(key) <= 4) or not key.isalnum():
         return None
 
     if key in LOCAL_OVERRIDES:
         return LOCAL_OVERRIDES[key]
 
-    db = _iata_db()
-    if key in db:
-        entry = db[key]
-        try:
-            lat = float(entry["lat"])
-            lon = float(entry["lon"])
-            return (lat, lon)
-        except (KeyError, TypeError, ValueError):
-            pass
+    # Prefer ICAO database for 4-letter codes
+    if len(key) == 4:
+        entry = _icao_db().get(key)
+        if entry:
+            try:
+                return (float(entry["lat"]), float(entry["lon"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+
+    # IATA database for 3-letter codes
+    if len(key) == 3:
+        entry = _iata_db().get(key)
+        if entry:
+            try:
+                return (float(entry["lat"]), float(entry["lon"]))
+            except (KeyError, TypeError, ValueError):
+                pass
+        # US convention: try K + IATA as ICAO
+        k_code = "K" + key
+        entry = _icao_db().get(k_code)
+        if entry:
+            try:
+                return (float(entry["lat"]), float(entry["lon"]))
+            except (KeyError, TypeError, ValueError):
+                pass
 
     return _FALLBACK.get(key)
 
 
 def airport_name(code: str) -> Optional[str]:
-    """Optional helper: official airport name from the database."""
+    """Official airport name from the offline database."""
     if not code:
         return None
     key = str(code).upper().strip()
-    entry = _iata_db().get(key)
+    entry = _icao_db().get(key) or _iata_db().get(key)
     if entry:
         return entry.get("name") or entry.get("city")
+    if len(key) == 3:
+        entry = _icao_db().get("K" + key)
+        if entry:
+            return entry.get("name") or entry.get("city")
     return None
+
+
+def iata_to_icao(iata: str) -> Optional[str]:
+    """Best-effort IATA → ICAO using airportsdata."""
+    if not iata:
+        return None
+    key = str(iata).upper().strip()
+    if len(key) != 3:
+        return None
+    entry = _iata_db().get(key)
+    if entry and entry.get("icao"):
+        return str(entry["icao"]).upper()
+    # Common US fallback
+    return "K" + key

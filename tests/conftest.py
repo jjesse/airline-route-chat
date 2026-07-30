@@ -12,15 +12,15 @@ from route_finder import load_graph
 
 @pytest.fixture
 def sample_csv(tmp_path: Path) -> Path:
-    """Minimal valid flights CSV used by most tests."""
+    """Minimal valid flights CSV (ICAO codes) used by most tests."""
     content = textwrap.dedent(
         """\
-        Originating Airport,Destination Airport,Airplane Type,DurationMinutes
-        DTW,ORD,A320,70
-        ORD,DEN,B737,145
-        DTW,DEN,A321,175
-        ORD,LAX,B757,250
-        DEN,LAX,A320,130
+        Originating Airport,Org Airport Code,Destination Airport,Dest Airport Code,Distance (mi),Aircraft
+        Detroit,KDTW,Chicago,KORD,228,A320
+        Chicago,KORD,Denver,KDEN,888,B737
+        Detroit,KDTW,Denver,KDEN,1124,A321
+        Chicago,KORD,Los Angeles,KLAX,1744,B757
+        Denver,KDEN,Los Angeles,KLAX,862,A320
         """
     )
     path = tmp_path / "flights.csv"
