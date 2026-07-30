@@ -56,9 +56,9 @@ with st.sidebar:
         "Upload your game flights CSV",
         type=["csv"],
         help=(
-            "Columns: Originating Airport, Destination Airport, Airplane Type. "
-            "Optional: DurationMinutes or Distance/Miles/NM. "
-            "Replace the sample with your simulation export."
+            "Game export columns: Org Airport Code, Dest Airport Code, Aircraft, "
+            "Distance (mi). Also accepts Originating/Destination Airport names. "
+            "Extra columns are ignored. Duration is estimated from distance."
         ),
     )
 
