@@ -5,6 +5,7 @@ Supports:
 - Shortest path by flight duration (DurationMinutes, or estimated from distance)
 - ICAO (4-letter) primary airport codes; IATA still accepted in chat
 - Game CSV formats (Org/Dest Airport Code, Aircraft, Distance (mi))
+- Cargo/freighter aircraft are excluded from passenger routing
 
 Security notes:
 - Airport tokens sanitized (A-Z0-9 only, length 3 or 4)
@@ -22,6 +23,8 @@ import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
+
+from aircraft_types import is_cargo_aircraft  # re-exported for tests
 
 MAX_CSV_ROWS = 20_000
 MAX_AIRPORTS = 2_000
@@ -119,8 +122,6 @@ def distance_to_duration(
     return round(minutes, 1)
 
 
-# City / short names resolve to ICAO (US K-prefix). Raw IATA stays IATA;
-# match_graph_airport maps between forms when searching the graph.
 AIRPORT_ALIASES: Dict[str, str] = {
     "KDTW": "KDTW", "KORD": "KORD", "KDEN": "KDEN", "KLAX": "KLAX",
     "KATL": "KATL", "KMIA": "KMIA", "KSEA": "KSEA", "KSFO": "KSFO", "KMSP": "KMSP",
@@ -139,7 +140,6 @@ AIRPORT_ALIASES: Dict[str, str] = {
 
 
 def _sanitize_code(token: str) -> Optional[str]:
-    """Return a clean 3- or 4-char A-Z0-9 airport code (IATA or ICAO)."""
     if not token or not isinstance(token, str):
         return None
     cleaned = re.sub(r"[^A-Z0-9]", "", token.upper().strip())
@@ -149,37 +149,27 @@ def _sanitize_code(token: str) -> Optional[str]:
 
 
 def resolve_airport(token: str) -> Optional[str]:
-    """Turn a code or city name into ICAO/IATA (sanitized)."""
     if not token or not isinstance(token, str):
         return None
     if len(token) > 80:
         return None
-
     cleaned = re.sub(r"[^A-Z0-9\s']", "", token.upper().strip())
     cleaned = re.sub(r"\s+", " ", cleaned)
-
     if cleaned in AIRPORT_ALIASES:
         return _sanitize_code(AIRPORT_ALIASES[cleaned])
-
     code = _sanitize_code(cleaned)
     if code:
         return code
-
     for part in cleaned.split():
         if part in AIRPORT_ALIASES:
             return _sanitize_code(AIRPORT_ALIASES[part])
         code = _sanitize_code(part)
         if code:
             return code
-
     return None
 
 
 def match_graph_airport(G: nx.DiGraph, code: Optional[str]) -> Optional[str]:
-    """Map a user/query code onto a node that exists in G.
-
-    Handles IATA ↔ US ICAO (Kxxx) so chat can say DTW while the CSV uses KDTW.
-    """
     if not code:
         return None
     c = _sanitize_code(code) or resolve_airport(code)
@@ -201,21 +191,17 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
         return None, None
     if len(query) > MAX_QUERY_LEN:
         return None, None
-
     q = query.upper().strip()
-
     m = re.search(r"FROM\s+(.+?)\s+TO\s+(.+?)(?:\s*[?.!,]+)?\s*$", q)
     if m:
         o, d = resolve_airport(m.group(1)), resolve_airport(m.group(2))
         if o and d:
             return o, d
-
     m = re.search(r"BETWEEN\s+(.+?)\s+AND\s+(.+?)(?:\s*[?.!,]+)?\s*$", q)
     if m:
         o, d = resolve_airport(m.group(1)), resolve_airport(m.group(2))
         if o and d:
             return o, d
-
     m = re.search(
         r"\b([A-Z0-9]{3,4}|[A-Z][A-Z\s']{2,})\s+(?:TO|-)\s+([A-Z0-9]{3,4}|[A-Z][A-Z\s']{2,})\b",
         q,
@@ -224,7 +210,6 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
         o, d = resolve_airport(m.group(1)), resolve_airport(m.group(2))
         if o and d:
             return o, d
-
     tokens = re.findall(r"[A-Z0-9']{3,}(?:\s+[A-Z0-9']+)*", q)
     resolved: List[str] = []
     for t in tokens:
@@ -233,7 +218,6 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
             resolved.append(code)
         if len(resolved) >= 2:
             return resolved[0], resolved[1]
-
     return None, None
 
 
@@ -246,24 +230,24 @@ def clamp_max_stops(value: int) -> int:
 
 
 def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
-    """Load flights CSV into a directed graph (ICAO codes preferred)."""
+    """Load flights CSV into a directed graph (passenger aircraft only).
+
+    Cargo / freighter types (e.g. "B777 Freighter", "B777F") are skipped so
+    they never appear on commercial passenger routes.
+    """
     path = Path(csv_path)
     if not path.is_file():
         raise ValueError(f"CSV file not found: {csv_path}")
-
     size_bytes = path.stat().st_size
     if size_bytes > 50 * 1024 * 1024:
         raise ValueError("CSV file is too large (max 50 MB).")
-
     df = pd.read_csv(path)
     df.columns = [str(c).strip() for c in df.columns]
     cols = list(df.columns)
-
     if len(df) > MAX_CSV_ROWS:
         raise ValueError(
             f"CSV has {len(df)} rows; maximum allowed is {MAX_CSV_ROWS}."
         )
-
     origin_col = (
         _find_column(cols, _ORIGIN_CODE_COLS)
         or _find_column(cols, _ORIGIN_NAME_COLS)
@@ -273,12 +257,9 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
         or _find_column(cols, _DEST_NAME_COLS)
     )
     plane_col = _find_column(cols, _AIRCRAFT_COLS)
-
     if not origin_col or not dest_col:
         raise ValueError(
             "CSV must include origin and destination columns. "
-            "Accepted: 'Org Airport Code' / 'Dest Airport Code' (ICAO), "
-            "or city-name columns. "
             f"Found: {cols}"
         )
     if not plane_col:
@@ -286,15 +267,12 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
             "CSV must include an aircraft column (e.g. 'Aircraft'). "
             f"Found: {cols}"
         )
-
     duration_col = _find_column(cols, _DURATION_COLS)
     distance_nm_col = _find_column(cols, _DISTANCE_NM_COLS)
     distance_sm_col = _find_column(cols, _DISTANCE_SM_COLS)
     distance_col = distance_nm_col or distance_sm_col
     distance_unit = "nm" if distance_nm_col else "sm"
-
     G = nx.DiGraph()
-
     for _, row in df.iterrows():
         origin = _sanitize_code(str(row[origin_col]))
         dest = _sanitize_code(str(row[dest_col]))
@@ -304,17 +282,19 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
             dest = resolve_airport(str(row[dest_col]))
         if not origin or not dest:
             continue
-
         plane_raw = str(row[plane_col]).strip()
         if plane_raw.lower() in ("nan", "none", ""):
             plane_raw = "UNKNOWN"
+        # Skip cargo / freighter — never use for passenger routing
+        if is_cargo_aircraft(plane_raw):
+            continue
         plane = re.sub(r"[^A-Za-z0-9\- ]", "", plane_raw)[:MAX_PLANE_TYPE_LEN]
         if not plane:
             plane = "UNKNOWN"
-
+        if is_cargo_aircraft(plane):
+            continue
         duration: Optional[float] = None
         distance_val: Optional[float] = None
-
         if duration_col is not None:
             try:
                 duration = float(row[duration_col])
@@ -322,7 +302,6 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
                     duration = None
             except (TypeError, ValueError):
                 duration = None
-
         if distance_col is not None:
             try:
                 distance_val = float(row[distance_col])
@@ -330,12 +309,10 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
                     distance_val = None
             except (TypeError, ValueError):
                 distance_val = None
-
         if duration is None and distance_val is not None:
             duration = distance_to_duration(
                 distance_val, plane, unit=distance_unit
             )
-
         if G.has_edge(origin, dest):
             if plane not in G[origin][dest]["planes"]:
                 G[origin][dest]["planes"].append(plane)
@@ -356,10 +333,8 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
                 attrs["distance"] = distance_val
                 attrs["distance_unit"] = distance_unit
             G.add_edge(origin, dest, **attrs)
-
         if G.number_of_nodes() > MAX_AIRPORTS:
             raise ValueError(f"Too many unique airports (max {MAX_AIRPORTS}).")
-
     return G
 
 
@@ -372,21 +347,14 @@ def find_routes(
     start = match_graph_airport(G, start) or ""
     end = match_graph_airport(G, end) or ""
     max_stops = clamp_max_stops(max_stops)
-
     if not start or not end or start not in G or end not in G:
         return []
-
     if start == end:
         return [{
-            "stops": 0,
-            "route": start,
-            "airports": [start],
-            "legs": [],
-            "total_duration": 0,
+            "stops": 0, "route": start, "airports": [start],
+            "legs": [], "total_duration": 0,
         }]
-
     paths = list(nx.all_simple_paths(G, start, end, cutoff=max_stops + 1))
-
     results = []
     for path in paths:
         legs = []
@@ -401,12 +369,9 @@ def find_routes(
             else:
                 total_dur += dur
             legs.append({
-                "from": path[i],
-                "to": path[i + 1],
-                "planes": planes,
-                "duration": dur,
+                "from": path[i], "to": path[i + 1],
+                "planes": planes, "duration": dur,
             })
-
         results.append({
             "stops": len(path) - 2,
             "route": " → ".join(path),
@@ -414,25 +379,19 @@ def find_routes(
             "legs": legs,
             "total_duration": total_dur if has_all_durs else None,
         })
-
-    results.sort(
-        key=lambda r: (
-            r["stops"],
-            r["total_duration"] if r["total_duration"] is not None else 99999,
-            r["route"],
-        )
-    )
+    results.sort(key=lambda r: (
+        r["stops"],
+        r["total_duration"] if r["total_duration"] is not None else 99999,
+        r["route"],
+    ))
     return results
 
 
 def find_shortest_by_time(
-    G: nx.DiGraph,
-    start: str,
-    end: str,
+    G: nx.DiGraph, start: str, end: str,
 ) -> Optional[Dict[str, Any]]:
     start = match_graph_airport(G, start) or ""
     end = match_graph_airport(G, end) or ""
-
     if not start or not end or start not in G or end not in G:
         return None
 
@@ -443,7 +402,6 @@ def find_shortest_by_time(
         path = nx.shortest_path(G, start, end, weight=weight)
     except (nx.NetworkXNoPath, nx.NodeNotFound):
         return None
-
     legs = []
     total_dur = 0
     for i in range(len(path) - 1):
@@ -453,12 +411,9 @@ def find_shortest_by_time(
             return None
         total_dur += dur
         legs.append({
-            "from": path[i],
-            "to": path[i + 1],
-            "planes": edge.get("planes", []),
-            "duration": dur,
+            "from": path[i], "to": path[i + 1],
+            "planes": edge.get("planes", []), "duration": dur,
         })
-
     return {
         "stops": len(path) - 2,
         "route": " → ".join(path),
@@ -512,7 +467,9 @@ def _focused_subgraph(G: nx.DiGraph, airports: List[str]) -> nx.DiGraph:
             nodes_of_interest.update(list(G.predecessors(n))[:20])
     if len(nodes_of_interest) > MAX_VIZ_NODES:
         extras = list(nodes_of_interest - set(airports))
-        nodes_of_interest = set(airports) | set(extras[: max(0, MAX_VIZ_NODES - len(airports))])
+        nodes_of_interest = set(airports) | set(
+            extras[: max(0, MAX_VIZ_NODES - len(airports))]
+        )
     return G.subgraph(nodes_of_interest).copy()
 
 
@@ -521,94 +478,23 @@ def _spring_pos(G: nx.DiGraph, seed: int = 42) -> Dict[str, Tuple[float, float]]
 
 
 def visualize_route_plotly(G, route, title=None):
-    airports = route.get("airports") or []
-    path_set = set(airports)
-    path_edges = list(zip(airports[:-1], airports[1:])) if len(airports) >= 2 else []
-    if not airports:
-        fig = go.Figure()
-        fig.add_annotation(text="No route to display", xref="paper", yref="paper",
-                           x=0.5, y=0.5, showarrow=False, font=dict(color="#f1f5f9", size=16))
-        fig.update_layout(template="plotly_dark", paper_bgcolor="#0f172a",
-                          plot_bgcolor="#0f172a", xaxis=dict(visible=False),
-                          yaxis=dict(visible=False), height=360)
-        return fig
-    sub = _focused_subgraph(G, airports)
-    pos = _spring_pos(sub, seed=42)
-    bg_x, bg_y = [], []
-    for u, v in sub.edges():
-        if (u, v) in path_edges:
-            continue
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        bg_x += [x0, x1, None]
-        bg_y += [y0, y1, None]
-    edge_bg = go.Scatter(x=bg_x, y=bg_y, mode="lines", line=dict(width=1, color="#334155"),
-                         hoverinfo="skip", name="Other flights", opacity=0.45)
-    path_traces = []
-    for u, v in path_edges:
-        if u not in pos or v not in pos:
-            continue
-        x0, y0 = pos[u]
-        x1, y1 = pos[v]
-        edge = G[u][v] if G.has_edge(u, v) else {}
-        planes = ", ".join(edge.get("planes", [])) or "?"
-        dur = edge.get("duration")
-        dur_txt = format_duration(dur) if dur is not None else "?"
-        path_traces.append(go.Scatter(
-            x=[x0, x1], y=[y0, y1], mode="lines", line=dict(width=4, color="#38bdf8"),
-            hovertemplate=f"<b>{u} → {v}</b><br>Aircraft: {planes}<br>Duration: {dur_txt}<extra></extra>",
-            name=f"{u}→{v}", showlegend=False))
-
-    def node_trace(nodes, color, size, name, border):
-        xs, ys, texts, hovers = [], [], [], []
-        for n in nodes:
-            if n not in pos:
-                continue
-            xs.append(pos[n][0]); ys.append(pos[n][1]); texts.append(n)
-            role = "Origin" if airports and n == airports[0] else (
-                "Destination" if airports and n == airports[-1] else (
-                    "Via" if n in path_set else "Nearby"))
-            deg = sub.degree(n) if n in sub else 0
-            hovers.append(f"<b>{n}</b><br>{role}<br>Connections: {deg}")
-        return go.Scatter(
-            x=xs, y=ys, mode="markers+text", text=texts, textposition="top center",
-            textfont=dict(color="#f1f5f9", size=11, family="Arial Black"),
-            marker=dict(size=size, color=color, line=dict(width=2, color=border)),
-            hovertemplate="%{hovertext}<extra></extra>", hovertext=hovers, name=name)
-
-    other_nodes = [n for n in sub.nodes if n not in path_set]
-    mid_path = [n for n in airports[1:-1] if n in sub] if len(airports) > 2 else []
-    traces = [edge_bg, *path_traces]
-    if other_nodes:
-        traces.append(node_trace(other_nodes, "#1e293b", 18, "Nearby", "#475569"))
-    if mid_path:
-        traces.append(node_trace(mid_path, "#0ea5e9", 24, "Via", "#7dd3fc"))
-    if airports and airports[0] in pos:
-        traces.append(node_trace([airports[0]], "#22c55e", 28, "Origin", "#86efac"))
-    if len(airports) >= 2 and airports[-1] in pos:
-        traces.append(node_trace([airports[-1]], "#f97316", 28, "Destination", "#fdba74"))
-    display_title = title or f"Route: {route.get('route', '')}"
-    if route.get("total_duration") is not None:
-        display_title += f"  ·  {format_duration(route['total_duration'])} total"
-    fig = go.Figure(data=traces)
-    fig.update_layout(
-        title=dict(text=display_title, font=dict(color="#f1f5f9", size=16)),
-        template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        showlegend=True, legend=dict(bgcolor="rgba(15,23,42,0.8)", bordercolor="#334155"),
-        xaxis=dict(visible=False), yaxis=dict(visible=False),
-        margin=dict(l=20, r=20, t=60, b=20), height=520, hovermode="closest")
-    return fig
+    from geo_viz import visualize_route_plotly as _geo
+    return _geo(G, route, title=title)
 
 
 def visualize_route_timeline_plotly(route, title=None):
     legs = route.get("legs") or []
     if not legs:
         fig = go.Figure()
-        fig.add_annotation(text="No legs to display", xref="paper", yref="paper",
-                           x=0.5, y=0.5, showarrow=False, font=dict(color="#f1f5f9", size=14))
-        fig.update_layout(template="plotly_dark", paper_bgcolor="#0f172a",
-                          plot_bgcolor="#0f172a", height=200,
-                          xaxis=dict(visible=False), yaxis=dict(visible=False))
+        fig.add_annotation(
+            text="No legs to display", xref="paper", yref="paper",
+            x=0.5, y=0.5, showarrow=False, font=dict(color="#f1f5f9", size=14),
+        )
+        fig.update_layout(
+            template="plotly_dark", paper_bgcolor="#0f172a",
+            plot_bgcolor="#0f172a", height=200,
+            xaxis=dict(visible=False), yaxis=dict(visible=False),
+        )
         return fig
     labels, durations, hover, colors = [], [], [], []
     palette = ["#38bdf8", "#22c55e", "#a78bfa", "#f97316", "#f472b6", "#2dd4bf"]
@@ -618,14 +504,17 @@ def visualize_route_timeline_plotly(route, title=None):
         dur = leg.get("duration")
         durations.append(dur if dur is not None else 0)
         planes = ", ".join(leg.get("planes") or []) or "?"
-        hover.append(f"<b>{label}</b><br>Aircraft: {planes}<br>Duration: {format_duration(dur)}")
+        hover.append(
+            f"<b>{label}</b><br>Aircraft: {planes}<br>Duration: {format_duration(dur)}"
+        )
         colors.append(palette[i % len(palette)])
     fig = go.Figure(go.Bar(
         x=durations, y=labels, orientation="h",
         marker=dict(color=colors, line=dict(color="#0f172a", width=1)),
         hovertemplate="%{customdata}<extra></extra>", customdata=hover,
         text=[format_duration(d) if d else "?" for d in durations],
-        textposition="auto", textfont=dict(color="#0f172a", size=12)))
+        textposition="auto", textfont=dict(color="#0f172a", size=12),
+    ))
     total = route.get("total_duration")
     ttl = title or "Flight legs"
     if total is not None:
@@ -636,38 +525,14 @@ def visualize_route_timeline_plotly(route, title=None):
         xaxis=dict(title="Minutes", color="#94a3b8", gridcolor="#1e293b"),
         yaxis=dict(autorange="reversed", color="#f1f5f9"),
         margin=dict(l=20, r=20, t=50, b=40),
-        height=max(220, 80 + 40 * len(legs)), showlegend=False)
+        height=max(220, 80 + 40 * len(legs)), showlegend=False,
+    )
     return fig
 
 
 def visualize_full_network_plotly(G):
-    g = G
-    if g.number_of_nodes() > MAX_VIZ_NODES:
-        g = g.subgraph(list(g.nodes)[:MAX_VIZ_NODES]).copy()
-    pos = _spring_pos(g, seed=7)
-    edge_x, edge_y = [], []
-    for u, v in g.edges():
-        x0, y0 = pos[u]; x1, y1 = pos[v]
-        edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
-    edge_trace = go.Scatter(x=edge_x, y=edge_y, mode="lines",
-                            line=dict(width=1.2, color="#334155"),
-                            hoverinfo="skip", name="Flights", opacity=0.55)
-    node_x, node_y, texts, hovers = [], [], [], []
-    for n in g.nodes():
-        node_x.append(pos[n][0]); node_y.append(pos[n][1]); texts.append(n)
-        hovers.append(f"<b>{n}</b><br>Out: {g.out_degree(n)}  In: {g.in_degree(n)}")
-    node_trace = go.Scatter(
-        x=node_x, y=node_y, mode="markers+text", text=texts, textposition="top center",
-        textfont=dict(color="#f1f5f9", size=10),
-        marker=dict(size=22, color="#0ea5e9", line=dict(width=2, color="#7dd3fc")),
-        hovertemplate="%{hovertext}<extra></extra>", hovertext=hovers, name="Airports")
-    fig = go.Figure(data=[edge_trace, node_trace])
-    fig.update_layout(
-        title=dict(text="Full Flight Network", font=dict(color="#f1f5f9", size=16)),
-        template="plotly_dark", paper_bgcolor="#0f172a", plot_bgcolor="#0f172a",
-        showlegend=False, xaxis=dict(visible=False), yaxis=dict(visible=False),
-        margin=dict(l=20, r=20, t=60, b=20), height=560, hovermode="closest")
-    return fig
+    from geo_viz import visualize_full_network_plotly as _geo
+    return _geo(G)
 
 
 def visualize_route(G, route, title=None):
@@ -683,36 +548,51 @@ def visualize_route(G, route, title=None):
     pos = _spring_pos(sub, seed=42)
     fig, ax = plt.subplots(figsize=(11, 7), facecolor="#0f172a")
     ax.set_facecolor("#0f172a")
-    nx.draw_networkx_edges(sub, pos, ax=ax, edge_color="#334155", width=1.0, alpha=0.5,
-                           arrows=True, arrowsize=12, connectionstyle="arc3,rad=0.05")
+    nx.draw_networkx_edges(
+        sub, pos, ax=ax, edge_color="#334155", width=1.0, alpha=0.5,
+        arrows=True, arrowsize=12, connectionstyle="arc3,rad=0.05",
+    )
     valid_path_edges = [(u, v) for u, v in path_edges if sub.has_edge(u, v)]
-    nx.draw_networkx_edges(sub, pos, edgelist=valid_path_edges, ax=ax, edge_color="#38bdf8",
-                           width=3.5, alpha=1.0, arrows=True, arrowsize=18,
-                           connectionstyle="arc3,rad=0.05")
+    nx.draw_networkx_edges(
+        sub, pos, edgelist=valid_path_edges, ax=ax, edge_color="#38bdf8",
+        width=3.5, alpha=1.0, arrows=True, arrowsize=18,
+        connectionstyle="arc3,rad=0.05",
+    )
     path_set = set(airports)
     other_nodes = [n for n in sub.nodes if n not in path_set]
-    nx.draw_networkx_nodes(sub, pos, nodelist=other_nodes, ax=ax, node_color="#1e293b",
-                           node_size=900, edgecolors="#475569", linewidths=1.5)
-    nx.draw_networkx_nodes(sub, pos, nodelist=[n for n in airports if n in sub], ax=ax,
-                           node_color="#0ea5e9", node_size=1400, edgecolors="#7dd3fc",
-                           linewidths=2.5)
+    nx.draw_networkx_nodes(
+        sub, pos, nodelist=other_nodes, ax=ax, node_color="#1e293b",
+        node_size=900, edgecolors="#475569", linewidths=1.5,
+    )
+    nx.draw_networkx_nodes(
+        sub, pos, nodelist=[n for n in airports if n in sub], ax=ax,
+        node_color="#0ea5e9", node_size=1400, edgecolors="#7dd3fc", linewidths=2.5,
+    )
     if airports and airports[0] in sub:
-        nx.draw_networkx_nodes(sub, pos, nodelist=[airports[0]], ax=ax, node_color="#22c55e",
-                               node_size=1600, edgecolors="#86efac", linewidths=2.5)
+        nx.draw_networkx_nodes(
+            sub, pos, nodelist=[airports[0]], ax=ax, node_color="#22c55e",
+            node_size=1600, edgecolors="#86efac", linewidths=2.5,
+        )
     if len(airports) >= 2 and airports[-1] in sub:
-        nx.draw_networkx_nodes(sub, pos, nodelist=[airports[-1]], ax=ax, node_color="#f97316",
-                               node_size=1600, edgecolors="#fdba74", linewidths=2.5)
-    nx.draw_networkx_labels(sub, pos, ax=ax, font_size=10, font_weight="bold",
-                            font_color="#f1f5f9")
+        nx.draw_networkx_nodes(
+            sub, pos, nodelist=[airports[-1]], ax=ax, node_color="#f97316",
+            node_size=1600, edgecolors="#fdba74", linewidths=2.5,
+        )
+    nx.draw_networkx_labels(
+        sub, pos, ax=ax, font_size=10, font_weight="bold", font_color="#f1f5f9",
+    )
     edge_labels = {}
     for u, v in valid_path_edges:
         dur = G[u][v].get("duration")
         if dur is not None:
             edge_labels[(u, v)] = format_duration(dur)
-    nx.draw_networkx_edge_labels(sub, pos, edge_labels=edge_labels, ax=ax,
-                                 font_color="#7dd3fc", font_size=8,
-                                 bbox=dict(boxstyle="round,pad=0.2", facecolor="#0f172a",
-                                           edgecolor="none", alpha=0.85))
+    nx.draw_networkx_edge_labels(
+        sub, pos, edge_labels=edge_labels, ax=ax, font_color="#7dd3fc", font_size=8,
+        bbox=dict(
+            boxstyle="round,pad=0.2", facecolor="#0f172a",
+            edgecolor="none", alpha=0.85,
+        ),
+    )
     display_title = title or f"Route: {route.get('route', '')}"
     if route.get("total_duration") is not None:
         display_title += f"  ·  {format_duration(route['total_duration'])} total"
@@ -728,12 +608,17 @@ def visualize_full_network(G):
     pos = _spring_pos(G, seed=7)
     fig, ax = plt.subplots(figsize=(12, 8), facecolor="#0f172a")
     ax.set_facecolor("#0f172a")
-    nx.draw_networkx_edges(G, pos, ax=ax, edge_color="#334155", width=1.2, alpha=0.6,
-                           arrows=True, arrowsize=10, connectionstyle="arc3,rad=0.06")
-    nx.draw_networkx_nodes(G, pos, ax=ax, node_color="#0ea5e9", node_size=1100,
-                           edgecolors="#7dd3fc", linewidths=2)
-    nx.draw_networkx_labels(G, pos, ax=ax, font_size=9, font_weight="bold",
-                            font_color="#f1f5f9")
+    nx.draw_networkx_edges(
+        G, pos, ax=ax, edge_color="#334155", width=1.2, alpha=0.6,
+        arrows=True, arrowsize=10, connectionstyle="arc3,rad=0.06",
+    )
+    nx.draw_networkx_nodes(
+        G, pos, ax=ax, node_color="#0ea5e9", node_size=1100,
+        edgecolors="#7dd3fc", linewidths=2,
+    )
+    nx.draw_networkx_labels(
+        G, pos, ax=ax, font_size=9, font_weight="bold", font_color="#f1f5f9",
+    )
     ax.set_title("Full Flight Network", color="#f1f5f9", fontsize=15, pad=14, fontweight="bold")
     ax.axis("off")
     plt.tight_layout()
