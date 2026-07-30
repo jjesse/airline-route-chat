@@ -57,7 +57,8 @@ with st.sidebar:
         type=["csv"],
         help=(
             "Columns: Originating Airport, Destination Airport, Airplane Type. "
-            "Optional: DurationMinutes. Replace the sample with your simulation export."
+            "Optional: DurationMinutes or Distance/Miles/NM. "
+            "Replace the sample with your simulation export."
         ),
     )
 
@@ -103,7 +104,7 @@ with st.sidebar:
     prefer_fastest = st.toggle("Prefer fastest by flight time", value=False)
 
     st.divider()
-    if st.button("Show full network map", use_container_width=True):
+    if st.button("Show full network map", width="stretch"):
         st.session_state["show_full_network"] = True
 
     st.divider()
@@ -125,7 +126,7 @@ with st.sidebar:
 if st.session_state.get("show_full_network"):
     with st.expander("Full flight network (geographic)", expanded=True):
         fig = visualize_full_network_plotly(G)
-        st.plotly_chart(fig, use_container_width=True, config={
+        st.plotly_chart(fig, width="stretch", config={
             "displayModeBar": True,
             "scrollZoom": True,
         })
@@ -168,7 +169,7 @@ for idx, msg in enumerate(st.session_state.messages):
                     "Stops": r["stops"],
                     "Total time": format_duration(r.get("total_duration")),
                 })
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)
 
             options = [
                 f"{i}. {r['route']}  ({format_duration(r.get('total_duration'))})"
@@ -195,7 +196,7 @@ for idx, msg in enumerate(st.session_state.messages):
                     chosen,
                     title=f"{origin} → {dest}",
                 )
-                st.plotly_chart(fig_map, use_container_width=True, config={
+                st.plotly_chart(fig_map, width="stretch", config={
                     "displayModeBar": True,
                     "scrollZoom": True,
                 })
@@ -209,7 +210,7 @@ for idx, msg in enumerate(st.session_state.messages):
                     chosen,
                     title=f"{origin} → {dest}",
                 )
-                st.plotly_chart(fig_time, use_container_width=True)
+                st.plotly_chart(fig_time, width="stretch")
 
             with tab_legs:
                 for leg in chosen["legs"]:
