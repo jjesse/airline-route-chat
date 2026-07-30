@@ -2,7 +2,7 @@
 
 Supports:
 - Multi-leg path finding (fewest stops)
-- Shortest path by flight duration (when DurationMinutes is present)
+- Shortest path by flight duration (DurationMinutes, or estimated from distance)
 - Airport code + common city name resolution
 - Static (matplotlib) and interactive (Plotly) visualizations
 
@@ -30,11 +30,116 @@ import plotly.graph_objects as go
 
 MAX_CSV_ROWS = 20_000
 MAX_AIRPORTS = 2_000
-MAX_STOPS = 5          # hard upper bound for path search
-MAX_VIZ_NODES = 80     # prevent huge figures
+MAX_STOPS = 5
+MAX_VIZ_NODES = 80
 MAX_QUERY_LEN = 500
 MAX_PLANE_TYPE_LEN = 32
 MAX_DURATION_MINUTES = 60 * 24 * 2  # 2 days
+MAX_DISTANCE = 25_000  # anything larger is treated as invalid
+
+# ---------------------------------------------------------------------------
+# Distance → duration estimation
+# ---------------------------------------------------------------------------
+
+# Typical cruise speeds (knots). Used only when DurationMinutes is absent.
+_CRUISE_KTS: Dict[str, float] = {
+    "A320": 450,
+    "A321": 450,
+    "A319": 440,
+    "A330": 470,
+    "A350": 488,
+    "B737": 450,
+    "B738": 450,
+    "B739": 450,
+    "B757": 460,
+    "B767": 460,
+    "B777": 480,
+    "B787": 488,
+    "E175": 430,
+    "E190": 430,
+    "CRJ": 420,
+    "CRJ9": 420,
+    "DH8": 280,
+    "AT7": 270,
+}
+DEFAULT_CRUISE_KTS = 440.0
+# Fixed block-time padding for taxi, climb, descent, approach (minutes).
+BLOCK_OVERHEAD_MINUTES = 30.0
+
+# CSV column name patterns (normalized: lower, no spaces/underscores).
+_DURATION_COLS = {"durationminutes", "duration", "blockminutes", "blocktime", "minutes"}
+_DISTANCE_SM_COLS = {
+    "distance", "dist", "miles", "mile", "distancemiles", "statutemiles", "sm",
+}
+_DISTANCE_NM_COLS = {
+    "nm", "nmi", "nauticalmiles", "distancenm", "distancenmi", "distancenaautical",
+}
+
+
+def _norm_col(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def _find_column(columns: List[str], candidates: set) -> Optional[str]:
+    for c in columns:
+        if _norm_col(c) in candidates:
+            return c
+    return None
+
+
+def cruise_speed_kts(plane: str) -> float:
+    """Best-effort cruise speed for an airplane type string."""
+    if not plane:
+        return DEFAULT_CRUISE_KTS
+    key = re.sub(r"[^A-Za-z0-9]", "", plane).upper()
+    if key in _CRUISE_KTS:
+        return _CRUISE_KTS[key]
+    # Prefix match (e.g. B737-800 → B737)
+    for code, kts in _CRUISE_KTS.items():
+        if key.startswith(code) or code.startswith(key):
+            return kts
+    if key.startswith("B7") or key.startswith("A3") or key.startswith("A2"):
+        return 450.0
+    return DEFAULT_CRUISE_KTS
+
+
+def distance_to_duration(
+    distance: float,
+    plane: str = "",
+    *,
+    unit: str = "sm",
+) -> Optional[float]:
+    """Convert distance to estimated block time in minutes.
+
+    unit:
+      - "sm" / "miles": statute miles
+      - "nm": nautical miles
+
+    Formula: overhead + (distance_nm / cruise_kts) * 60
+    """
+    try:
+        distance = float(distance)
+    except (TypeError, ValueError):
+        return None
+    if not (0 < distance <= MAX_DISTANCE):
+        return None
+
+    unit = (unit or "sm").lower()
+    if unit in ("nm", "nmi", "nautical"):
+        distance_nm = distance
+    else:
+        # statute miles → nautical miles
+        distance_nm = distance * 0.868976
+
+    kts = cruise_speed_kts(plane)
+    if kts <= 0:
+        return None
+
+    minutes = BLOCK_OVERHEAD_MINUTES + (distance_nm / kts) * 60.0
+    if not (0 < minutes <= MAX_DURATION_MINUTES):
+        return None
+    return round(minutes, 1)
+
 
 # ---------------------------------------------------------------------------
 # Airport name / city → IATA helpers
@@ -101,8 +206,6 @@ def extract_airports(query: str) -> Tuple[Optional[str], Optional[str]]:
 
     q = query.upper().strip()
 
-    # Destination is greedy up to trailing punctuation / end of string so
-    # multi-word cities like "LOS ANGELES" and "SAN FRANCISCO" are captured.
     m = re.search(
         r"FROM\s+(.+?)\s+TO\s+(.+?)(?:\s*[?.!,]+)?\s*$",
         q,
@@ -156,7 +259,12 @@ def clamp_max_stops(value: int) -> int:
 # ---------------------------------------------------------------------------
 
 def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
-    """Load flights CSV into a directed graph."""
+    """Load flights CSV into a directed graph.
+
+    Duration on each edge comes from, in order:
+      1. DurationMinutes (or similar) if present and valid
+      2. Estimated from Distance / Miles / NM using aircraft cruise speed
+    """
     path = Path(csv_path)
     if not path.is_file():
         raise ValueError(f"CSV file not found: {csv_path}")
@@ -179,7 +287,13 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
             f"CSV must contain columns: {required}. Found: {list(df.columns)}"
         )
 
-    has_duration = "DurationMinutes" in df.columns
+    duration_col = _find_column(list(df.columns), _DURATION_COLS)
+    distance_nm_col = _find_column(list(df.columns), _DISTANCE_NM_COLS)
+    distance_sm_col = _find_column(list(df.columns), _DISTANCE_SM_COLS)
+    # Prefer explicit NM column over generic "Distance" when both exist.
+    distance_col = distance_nm_col or distance_sm_col
+    distance_unit = "nm" if distance_nm_col else "sm"
+
     G = nx.DiGraph()
 
     for _, row in df.iterrows():
@@ -193,14 +307,29 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
         if not plane:
             plane = "UNKNOWN"
 
-        duration = None
-        if has_duration:
+        duration: Optional[float] = None
+        distance_val: Optional[float] = None
+
+        if duration_col is not None:
             try:
-                duration = float(row["DurationMinutes"])
+                duration = float(row[duration_col])
                 if not (0 < duration <= MAX_DURATION_MINUTES):
                     duration = None
             except (TypeError, ValueError):
                 duration = None
+
+        if distance_col is not None:
+            try:
+                distance_val = float(row[distance_col])
+                if not (0 < distance_val <= MAX_DISTANCE):
+                    distance_val = None
+            except (TypeError, ValueError):
+                distance_val = None
+
+        if duration is None and distance_val is not None:
+            duration = distance_to_duration(
+                distance_val, plane, unit=distance_unit
+            )
 
         if G.has_edge(origin, dest):
             if plane not in G[origin][dest]["planes"]:
@@ -209,10 +338,18 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
                 existing = G[origin][dest].get("duration")
                 if existing is None or duration < existing:
                     G[origin][dest]["duration"] = duration
+            if distance_val is not None:
+                existing_d = G[origin][dest].get("distance")
+                if existing_d is None or distance_val < existing_d:
+                    G[origin][dest]["distance"] = distance_val
+                    G[origin][dest]["distance_unit"] = distance_unit
         else:
             attrs: Dict[str, Any] = {"planes": [plane]}
             if duration is not None:
                 attrs["duration"] = duration
+            if distance_val is not None:
+                attrs["distance"] = distance_val
+                attrs["distance_unit"] = distance_unit
             G.add_edge(origin, dest, **attrs)
 
         if G.number_of_nodes() > MAX_AIRPORTS:
@@ -295,7 +432,7 @@ def find_shortest_by_time(
     start: str,
     end: str,
 ) -> Optional[Dict[str, Any]]:
-    """Dijkstra shortest path using DurationMinutes as weight."""
+    """Dijkstra shortest path using duration (given or estimated) as weight."""
     start = _sanitize_code(start) or ""
     end = _sanitize_code(end) or ""
 
@@ -401,7 +538,7 @@ def _spring_pos(G: nx.DiGraph, seed: int = 42) -> Dict[str, Tuple[float, float]]
 
 
 # ---------------------------------------------------------------------------
-# Interactive Plotly visualizations
+# Interactive Plotly visualizations (legacy spring-layout kept for tests)
 # ---------------------------------------------------------------------------
 
 def visualize_route_plotly(
