@@ -1,7 +1,13 @@
 """Streamlit chat + interactive geographic visualization UI."""
 
-import streamlit as st
+from __future__ import annotations
+
+import hashlib
+import tempfile
+from pathlib import Path
+
 import pandas as pd
+import streamlit as st
 
 from route_finder import (
     load_graph,
@@ -24,23 +30,66 @@ st.set_page_config(
 
 st.title("✈️ Airline Route Chat")
 st.caption(
-    "Ask for routes in plain English. Geographic maps show your path on a real map of the US. "
-    "Data source: flights.csv only."
+    "Ask for routes in plain English. Geographic maps use real airport coordinates "
+    "looked up from IATA codes. Data source: your flights CSV only."
 )
 
-@st.cache_resource
-def get_graph():
-    return load_graph("flights.csv")
+# ---------------------------------------------------------------------------
+# Graph loading (default sample or uploaded game CSV)
+# ---------------------------------------------------------------------------
 
-try:
-    G = get_graph()
-except Exception as e:
-    st.error(f"Could not load flights.csv: {e}")
-    st.stop()
+
+@st.cache_resource
+def get_graph(cache_key: str, csv_bytes: bytes | None = None):
+    """Load graph from default flights.csv or from uploaded bytes."""
+    if csv_bytes is None:
+        return load_graph("flights.csv"), "flights.csv (sample)"
+
+    tmp = Path(tempfile.gettempdir()) / f"airline_route_{cache_key}.csv"
+    tmp.write_bytes(csv_bytes)
+    return load_graph(tmp), f"uploaded ({len(csv_bytes):,} bytes)"
+
 
 with st.sidebar:
-    st.header("Controls")
+    st.header("Data source")
+    uploaded = st.file_uploader(
+        "Upload your game flights CSV",
+        type=["csv"],
+        help=(
+            "Columns: Originating Airport, Destination Airport, Airplane Type. "
+            "Optional: DurationMinutes. Replace the sample with your simulation export."
+        ),
+    )
+
+    if uploaded is not None:
+        raw = uploaded.getvalue()
+        cache_key = hashlib.sha256(raw).hexdigest()[:16]
+        # New file → clear prior chat so answers match the new network
+        prev = st.session_state.get("_csv_key")
+        if prev != cache_key:
+            st.session_state["_csv_key"] = cache_key
+            st.session_state["messages"] = []
+            st.session_state["show_full_network"] = False
+            get_graph.clear()
+        try:
+            G, source_label = get_graph(cache_key, raw)
+        except Exception as e:
+            st.error(f"Could not load uploaded CSV: {e}")
+            st.stop()
+        st.caption(f"Using **{uploaded.name}**")
+    else:
+        try:
+            G, source_label = get_graph("default", None)
+        except Exception as e:
+            st.error(f"Could not load flights.csv: {e}")
+            st.stop()
+        st.caption("Using sample `flights.csv` — upload yours above.")
+
     st.success(f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights")
+    st.caption(f"Source: {source_label}")
+
+    st.divider()
+    st.header("Controls")
 
     max_stops = st.slider(
         "Max stops (for multi-leg search)",
@@ -65,9 +114,13 @@ with st.sidebar:
         - `ORD to LAX`
         - `fastest Atlanta to Seattle`
         - City names and IATA codes both work
+        - Upload your game CSV to use real routes
         """
     )
-    st.caption("Maps use real airport coordinates. Hover edges for aircraft & duration.")
+    st.caption(
+        "Maps look up lat/lon from IATA via an offline airport database. "
+        "Hover edges for aircraft & duration."
+    )
 
 if st.session_state.get("show_full_network"):
     with st.expander("Full flight network (geographic)", expanded=True):
@@ -80,7 +133,7 @@ if st.session_state.get("show_full_network"):
             st.session_state["show_full_network"] = False
             st.rerun()
 
-if "messages" not in st.session_state:
+if "messages" not in st.session_state or not st.session_state.messages:
     st.session_state.messages = [
         {
             "role": "assistant",
@@ -89,6 +142,7 @@ if "messages" not in st.session_state:
                 "- How do I get from Detroit to Denver?\n"
                 "- ORD to LAX\n"
                 "- fastest from ATL to SEA\n\n"
+                "Upload **your game CSV** in the sidebar to replace the sample data. "
                 "Pick a route to see it on a **geographic map** and timeline."
             ),
             "routes": None,
