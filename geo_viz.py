@@ -2,13 +2,34 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import networkx as nx
 import plotly.graph_objects as go
 
-from airport_coords import get_airport_coords
+from airport_coords import (
+    get_airport_coords,
+    airport_name,
+    airport_city,
+    format_airport_label,
+)
 from route_finder import format_duration, MAX_VIZ_NODES, _focused_subgraph
+
+
+def _hover_airport(code: str, role: str = "", connections: Optional[int] = None) -> str:
+    """Build rich hover HTML for an airport marker."""
+    name = airport_name(code) or ""
+    city = airport_city(code) or ""
+    lines = [f"<b>{code}</b>"]
+    if name:
+        lines.append(name)
+    if city and city.lower() not in name.lower():
+        lines.append(city)
+    if role:
+        lines.append(role)
+    if connections is not None:
+        lines.append(f"Connections: {connections}")
+    return "<br>".join(lines)
 
 
 def _geo_layout(codes) -> Dict[str, Any]:
@@ -90,7 +111,6 @@ def visualize_route_plotly(
     if not airports:
         return _empty_fig()
 
-    # Prefer real coords; if any path airport is missing, still plot what we can.
     path_with_coords = [a for a in airports if get_airport_coords(a)]
     if len(path_with_coords) < 1:
         return _empty_fig("No coordinates for airports on this route")
@@ -99,7 +119,6 @@ def visualize_route_plotly(
 
     traces: List[Any] = []
 
-    # Background edges (nearby network)
     bg_lat, bg_lon = [], []
     for u, v in sub.edges():
         if (u, v) in path_edges:
@@ -121,7 +140,6 @@ def visualize_route_plotly(
             )
         )
 
-    # Path edges
     for u, v in path_edges:
         cu, cv = get_airport_coords(u), get_airport_coords(v)
         if not cu or not cv:
@@ -130,6 +148,8 @@ def visualize_route_plotly(
         planes = ", ".join(edge.get("planes", [])) or "?"
         dur = edge.get("duration")
         dur_txt = format_duration(dur) if dur is not None else "?"
+        u_label = format_airport_label(u)
+        v_label = format_airport_label(v)
         traces.append(
             go.Scattergeo(
                 lat=[cu[0], cv[0]], lon=[cu[1], cv[1]],
@@ -137,6 +157,8 @@ def visualize_route_plotly(
                 line=dict(width=3.5, color="#38bdf8"),
                 hovertemplate=(
                     f"<b>{u} → {v}</b><br>"
+                    f"{u_label}<br>"
+                    f"{v_label}<br>"
                     f"Aircraft: {planes}<br>"
                     f"Duration: {dur_txt}<extra></extra>"
                 ),
@@ -160,7 +182,7 @@ def visualize_route_plotly(
                 )
             )
             deg = sub.degree(n) if n in sub else 0
-            hovers.append(f"<b>{n}</b><br>{role}<br>Connections: {deg}")
+            hovers.append(_hover_airport(n, role=role, connections=deg))
         if not lats:
             return None
         return go.Scattergeo(
@@ -241,7 +263,12 @@ def visualize_full_network_plotly(G: nx.DiGraph) -> go.Figure:
         lats.append(c[0])
         lons.append(c[1])
         texts.append(n)
-        hovers.append(f"<b>{n}</b><br>Out: {g.out_degree(n)}  In: {g.in_degree(n)}")
+        hovers.append(
+            _hover_airport(
+                n,
+                connections=g.out_degree(n) + g.in_degree(n),
+            )
+        )
 
     if lats:
         traces.append(

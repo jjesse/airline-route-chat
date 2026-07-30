@@ -1,7 +1,7 @@
-"""Airport coordinates for geographic route maps (lat, lon).
+"""Airport coordinates and names for geographic route maps.
 
-Looks up latitude/longitude from ICAO (preferred) or IATA codes using the
-offline `airportsdata` database.
+Looks up latitude/longitude and official names from ICAO (preferred) or
+IATA codes using the offline `airportsdata` database.
 """
 
 from __future__ import annotations
@@ -25,6 +25,28 @@ _FALLBACK: Dict[str, Tuple[float, float]] = {
     "KMSP": (44.8848, -93.2223), "MSP": (44.8848, -93.2223),
 }
 
+_FALLBACK_NAMES: Dict[str, str] = {
+    "KDTW": "Detroit Metropolitan Wayne County Airport",
+    "DTW": "Detroit Metropolitan Wayne County Airport",
+    "KORD": "Chicago O'Hare International Airport",
+    "ORD": "Chicago O'Hare International Airport",
+    "KDEN": "Denver International Airport",
+    "DEN": "Denver International Airport",
+    "KLAX": "Los Angeles International Airport",
+    "LAX": "Los Angeles International Airport",
+    "KATL": "Hartsfield-Jackson Atlanta International Airport",
+    "ATL": "Hartsfield-Jackson Atlanta International Airport",
+    "KMIA": "Miami International Airport",
+    "MIA": "Miami International Airport",
+    "KSEA": "Seattle-Tacoma International Airport",
+    "SEA": "Seattle-Tacoma International Airport",
+    "KSFO": "San Francisco International Airport",
+    "SFO": "San Francisco International Airport",
+    "KMSP": "Minneapolis-Saint Paul International Airport",
+    "MSP": "Minneapolis-Saint Paul International Airport",
+    "SCEL": "Arturo Merino Benítez International Airport",
+}
+
 
 @lru_cache(maxsize=1)
 def _icao_db() -> Dict[str, dict]:
@@ -46,6 +68,22 @@ def _iata_db() -> Dict[str, dict]:
         return {}
 
 
+def _lookup_entry(code: str) -> Optional[dict]:
+    """Return airportsdata entry for ICAO or IATA code."""
+    key = str(code).upper().strip()
+    if not key:
+        return None
+    entry = _icao_db().get(key)
+    if entry:
+        return entry
+    entry = _iata_db().get(key)
+    if entry:
+        return entry
+    if len(key) == 3:
+        return _icao_db().get("K" + key)
+    return None
+
+
 def get_airport_coords(code: str) -> Optional[Tuple[float, float]]:
     """Return (lat, lon) for an ICAO or IATA code, or None if unknown."""
     if not code or not isinstance(code, str):
@@ -58,31 +96,12 @@ def get_airport_coords(code: str) -> Optional[Tuple[float, float]]:
     if key in LOCAL_OVERRIDES:
         return LOCAL_OVERRIDES[key]
 
-    # Prefer ICAO database for 4-letter codes
-    if len(key) == 4:
-        entry = _icao_db().get(key)
-        if entry:
-            try:
-                return (float(entry["lat"]), float(entry["lon"]))
-            except (KeyError, TypeError, ValueError):
-                pass
-
-    # IATA database for 3-letter codes
-    if len(key) == 3:
-        entry = _iata_db().get(key)
-        if entry:
-            try:
-                return (float(entry["lat"]), float(entry["lon"]))
-            except (KeyError, TypeError, ValueError):
-                pass
-        # US convention: try K + IATA as ICAO
-        k_code = "K" + key
-        entry = _icao_db().get(k_code)
-        if entry:
-            try:
-                return (float(entry["lat"]), float(entry["lon"]))
-            except (KeyError, TypeError, ValueError):
-                pass
+    entry = _lookup_entry(key)
+    if entry:
+        try:
+            return (float(entry["lat"]), float(entry["lon"]))
+        except (KeyError, TypeError, ValueError):
+            pass
 
     return _FALLBACK.get(key)
 
@@ -92,14 +111,34 @@ def airport_name(code: str) -> Optional[str]:
     if not code:
         return None
     key = str(code).upper().strip()
-    entry = _icao_db().get(key) or _iata_db().get(key)
+    entry = _lookup_entry(key)
     if entry:
-        return entry.get("name") or entry.get("city")
-    if len(key) == 3:
-        entry = _icao_db().get("K" + key)
-        if entry:
-            return entry.get("name") or entry.get("city")
+        name = entry.get("name") or entry.get("city")
+        if name:
+            return str(name)
+    return _FALLBACK_NAMES.get(key)
+
+
+def airport_city(code: str) -> Optional[str]:
+    """City name for an airport code, if available."""
+    if not code:
+        return None
+    key = str(code).upper().strip()
+    entry = _lookup_entry(key)
+    if entry and entry.get("city"):
+        return str(entry["city"])
     return None
+
+
+def format_airport_label(code: str) -> str:
+    """Human-readable label: 'SCEL — Arturo Merino Benítez International Airport'."""
+    if not code:
+        return ""
+    key = str(code).upper().strip()
+    name = airport_name(key)
+    if name:
+        return f"{key} — {name}"
+    return key
 
 
 def iata_to_icao(iata: str) -> Optional[str]:
@@ -112,5 +151,4 @@ def iata_to_icao(iata: str) -> Optional[str]:
     entry = _iata_db().get(key)
     if entry and entry.get("icao"):
         return str(entry["icao"]).upper()
-    # Common US fallback
     return "K" + key
