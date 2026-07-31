@@ -26,6 +26,7 @@ There is **no authentication**. Treat the UI as fully trusted only on a private 
 | Huge / malicious CSV → memory or CPU exhaustion | Upload capped at **50 MB** (Streamlit + `load_graph`); max **20,000** rows; max **2,000** airports |
 | Temp file leftover after upload | Uploads written via `mkstemp` and **deleted** after graph load |
 | Pathological multi-leg search | `max_stops` hard-clamped to **0–5** |
+| Query / upload spam (CPU) | **Rate limits** (session + process): queries **30 / 60s** per session, **120 / 60s** global; uploads **5 / 5 min** per session, **20 / 5 min** global |
 | Injection via airport / plane strings | Codes: `A-Z0-9` only, length 3–4; plane types length-capped and charset-limited |
 | Oversized chat queries | Cap **500** characters |
 | Unbounded session memory | Chat history trimmed to last **40** messages |
@@ -35,6 +36,21 @@ There is **no authentication**. Treat the UI as fully trusted only on a private 
 | Container privilege | Runs as non-root **`appuser` (uid 1000)** |
 | Streamlit defaults | Headless; CORS disabled; XSRF protection on; max upload 50 MB; no usage stats |
 | Dependency vulnerabilities | Review with `pip-audit` periodically |
+
+---
+
+## Rate limiting details
+
+Implemented in `rate_limit.py` as a sliding window:
+
+| Action | Per browser session | Process-wide |
+|--------|---------------------|--------------|
+| Chat / route query | 30 per 60 seconds | 120 per 60 seconds |
+| New CSV upload | 5 per 5 minutes | 20 per 5 minutes |
+
+Limits are **in-memory** on the Streamlit worker. They reset when the process
+restarts. They are not a substitute for edge rate limiting (nginx, Cloudflare,
+etc.) if the app is ever internet-facing.
 
 ---
 
@@ -56,6 +72,7 @@ Uploads **are** supported in the Streamlit sidebar. They are subject to the same
 2. Required origin / destination / aircraft columns (flexible header names)
 3. Invalid codes skipped; cargo aircraft rows skipped
 4. Temp file removed after successful or failed parse attempt (`finally`)
+5. New file identity is rate-limited (see above)
 
 Do not treat an uploaded CSV as trusted configuration for anything beyond this app.
 
@@ -87,11 +104,5 @@ issues; avoid public PoCs until a fix is available.
 
 - **2026-07-29** — Initial pass: sanitization, resource limits, non-root Docker, this document.
 - **2026-07-30** — CSV upload added; ICAO support; cargo filter.
-- **2026-07-30 (this review)** —
-  - Early **50 MB** upload rejection in Streamlit
-  - Temp upload files **unlinked** after load
-  - Session message history **bounded**
-  - Filename display escaped
-  - Dockerfile: `headless`, `enableCORS=false`, `enableXsrfProtection=true`,
-    `maxUploadSize=50`, `gatherUsageStats=false`
-  - SECURITY.md updated for upload + current controls
+- **2026-07-30** — Upload size, temp cleanup, session bounds, Streamlit server flags.
+- **2026-07-30** — **Rate limiting** for queries and uploads (session + process sliding windows).

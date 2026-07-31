@@ -6,6 +6,7 @@ import hashlib
 import html
 import os
 import tempfile
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -23,8 +24,8 @@ from route_finder import (
     MAX_QUERY_LEN,
 )
 from geo_viz import visualize_route_plotly, visualize_full_network_plotly
+from rate_limit import check_query_allowed, check_upload_allowed
 
-# Keep in sync with load_graph file-size limit
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_MESSAGES = 40
 
@@ -43,13 +44,15 @@ st.caption(
 )
 
 
+def _session_id() -> str:
+    if "_rate_session_id" not in st.session_state:
+        st.session_state["_rate_session_id"] = uuid.uuid4().hex
+    return st.session_state["_rate_session_id"]
+
+
 @st.cache_resource
 def get_graph(cache_key: str, csv_bytes: bytes | None = None):
-    """Load graph from default flights.csv or from uploaded bytes.
-
-    Uploaded content is written to a private temp file and removed after load
-    so large CSVs are not left on disk.
-    """
+    """Load graph from default flights.csv or from uploaded bytes."""
     if csv_bytes is None:
         return load_graph("flights.csv"), "flights.csv (sample)"
 
@@ -73,10 +76,8 @@ def get_graph(cache_key: str, csv_bytes: bytes | None = None):
 
 
 def _trim_messages() -> None:
-    """Bound session history to limit memory growth."""
     msgs = st.session_state.get("messages") or []
     if len(msgs) > MAX_SESSION_MESSAGES:
-        # Keep the first system greeting if present, else just the tail
         st.session_state.messages = msgs[-MAX_SESSION_MESSAGES:]
 
 
@@ -103,6 +104,12 @@ with st.sidebar:
         cache_key = hashlib.sha256(raw).hexdigest()[:16]
         prev = st.session_state.get("_csv_key")
         if prev != cache_key:
+            # Rate-limit only when accepting a *new* file
+            up = check_upload_allowed(_session_id())
+            if not up.allowed:
+                st.error(up.message)
+                st.stop()
+
             st.session_state["_csv_key"] = cache_key
             st.session_state["messages"] = []
             st.session_state["show_full_network"] = False
@@ -110,7 +117,6 @@ with st.sidebar:
         try:
             G, source_label = get_graph(cache_key, raw)
         except Exception as e:
-            # Do not surface full paths / internals
             st.error(f"Could not load uploaded CSV: {type(e).__name__}: {e}")
             st.stop()
         safe_name = html.escape(Path(str(uploaded.name)).name[:120])
@@ -262,6 +268,11 @@ for idx, msg in enumerate(st.session_state.messages):
 if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or KDTW to KDEN)"):
     if len(prompt) > MAX_QUERY_LEN:
         st.warning(f"Query is too long. Please keep it under {MAX_QUERY_LEN} characters.")
+        st.stop()
+
+    rl = check_query_allowed(_session_id())
+    if not rl.allowed:
+        st.warning(rl.message)
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": prompt})
