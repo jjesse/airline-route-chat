@@ -15,7 +15,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY --chown=appuser:appgroup . .
 
-# Drop privileges
 USER appuser
 
 EXPOSE 8501
@@ -23,4 +22,16 @@ EXPOSE 8501
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
-ENTRYPOINT ["streamlit", "run", "streamlit_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Hardened Streamlit server defaults for a local/demo container.
+# Still binds 0.0.0.0 so Docker port mapping works — do not publish to the
+# public internet without an auth proxy.
+ENTRYPOINT [
+  "streamlit", "run", "streamlit_app.py",
+  "--server.port=8501",
+  "--server.address=0.0.0.0",
+  "--server.headless=true",
+  "--server.enableCORS=false",
+  "--server.enableXsrfProtection=true",
+  "--server.maxUploadSize=50",
+  "--browser.gatherUsageStats=false"
+]

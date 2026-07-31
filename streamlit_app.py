@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import html
+import os
 import tempfile
 from pathlib import Path
 
@@ -18,8 +20,13 @@ from route_finder import (
     visualize_route_timeline_plotly,
     clamp_max_stops,
     MAX_STOPS,
+    MAX_QUERY_LEN,
 )
 from geo_viz import visualize_route_plotly, visualize_full_network_plotly
+
+# Keep in sync with load_graph file-size limit
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024
+MAX_SESSION_MESSAGES = 40
 
 st.set_page_config(
     page_title="Airline Route Chat",
@@ -31,23 +38,46 @@ st.set_page_config(
 st.title("✈️ Airline Route Chat")
 st.caption(
     "Ask for routes in plain English. Geographic maps use real airport coordinates "
-    "looked up from IATA codes. Data source: your flights CSV only."
+    "looked up from ICAO/IATA codes. Data source: your flights CSV only. "
+    "Local/demo tool — do not expose publicly without auth."
 )
-
-# ---------------------------------------------------------------------------
-# Graph loading (default sample or uploaded game CSV)
-# ---------------------------------------------------------------------------
 
 
 @st.cache_resource
 def get_graph(cache_key: str, csv_bytes: bytes | None = None):
-    """Load graph from default flights.csv or from uploaded bytes."""
+    """Load graph from default flights.csv or from uploaded bytes.
+
+    Uploaded content is written to a private temp file and removed after load
+    so large CSVs are not left on disk.
+    """
     if csv_bytes is None:
         return load_graph("flights.csv"), "flights.csv (sample)"
 
-    tmp = Path(tempfile.gettempdir()) / f"airline_route_{cache_key}.csv"
-    tmp.write_bytes(csv_bytes)
-    return load_graph(tmp), f"uploaded ({len(csv_bytes):,} bytes)"
+    if len(csv_bytes) > MAX_UPLOAD_BYTES:
+        raise ValueError(
+            f"Upload too large ({len(csv_bytes):,} bytes). "
+            f"Maximum is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+        )
+
+    fd, tmp_name = tempfile.mkstemp(suffix=".csv", prefix="airline_route_")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(csv_bytes)
+        G = load_graph(tmp_name)
+        return G, f"uploaded ({len(csv_bytes):,} bytes)"
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except OSError:
+            pass
+
+
+def _trim_messages() -> None:
+    """Bound session history to limit memory growth."""
+    msgs = st.session_state.get("messages") or []
+    if len(msgs) > MAX_SESSION_MESSAGES:
+        # Keep the first system greeting if present, else just the tail
+        st.session_state.messages = msgs[-MAX_SESSION_MESSAGES:]
 
 
 with st.sidebar:
@@ -57,15 +87,20 @@ with st.sidebar:
         type=["csv"],
         help=(
             "Game export columns: Org Airport Code, Dest Airport Code, Aircraft, "
-            "Distance (mi). Also accepts Originating/Destination Airport names. "
-            "Extra columns are ignored. Duration is estimated from distance."
+            "Distance (mi). Max 50 MB. Extra columns ignored. Cargo aircraft excluded."
         ),
     )
 
     if uploaded is not None:
         raw = uploaded.getvalue()
+        if len(raw) > MAX_UPLOAD_BYTES:
+            st.error(
+                f"File is too large ({len(raw) / (1024 * 1024):.1f} MB). "
+                f"Maximum is {MAX_UPLOAD_BYTES // (1024 * 1024)} MB."
+            )
+            st.stop()
+
         cache_key = hashlib.sha256(raw).hexdigest()[:16]
-        # New file → clear prior chat so answers match the new network
         prev = st.session_state.get("_csv_key")
         if prev != cache_key:
             st.session_state["_csv_key"] = cache_key
@@ -75,19 +110,21 @@ with st.sidebar:
         try:
             G, source_label = get_graph(cache_key, raw)
         except Exception as e:
-            st.error(f"Could not load uploaded CSV: {e}")
+            # Do not surface full paths / internals
+            st.error(f"Could not load uploaded CSV: {type(e).__name__}: {e}")
             st.stop()
-        st.caption(f"Using **{uploaded.name}**")
+        safe_name = html.escape(Path(str(uploaded.name)).name[:120])
+        st.caption(f"Using **{safe_name}**")
     else:
         try:
             G, source_label = get_graph("default", None)
         except Exception as e:
-            st.error(f"Could not load flights.csv: {e}")
+            st.error(f"Could not load flights.csv: {type(e).__name__}: {e}")
             st.stop()
         st.caption("Using sample `flights.csv` — upload yours above.")
 
     st.success(f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights")
-    st.caption(f"Source: {source_label}")
+    st.caption(f"Source: {html.escape(str(source_label)[:80])}")
 
     st.divider()
     st.header("Controls")
@@ -112,15 +149,15 @@ with st.sidebar:
     st.markdown(
         """
         - `How do I get from Detroit to Denver?`
-        - `ORD to LAX`
+        - `KORD to KLAX`
         - `fastest Atlanta to Seattle`
-        - City names and IATA codes both work
-        - Upload your game CSV to use real routes
+        - City names and ICAO/IATA codes both work
+        - Cargo freighters are excluded from routes
         """
     )
     st.caption(
-        "Maps look up lat/lon from IATA via an offline airport database. "
-        "Hover edges for aircraft & duration."
+        "Maps look up lat/lon and airport names offline. "
+        "Hover markers for full airport names."
     )
 
 if st.session_state.get("show_full_network"):
@@ -141,7 +178,7 @@ if "messages" not in st.session_state or not st.session_state.messages:
             "content": (
                 "Hi! Ask me something like:\n"
                 "- How do I get from Detroit to Denver?\n"
-                "- ORD to LAX\n"
+                "- KORD to KLAX\n"
                 "- fastest from ATL to SEA\n\n"
                 "Upload **your game CSV** in the sidebar to replace the sample data. "
                 "Pick a route to see it on a **geographic map** and timeline."
@@ -151,6 +188,8 @@ if "messages" not in st.session_state or not st.session_state.messages:
             "dest": None,
         }
     ]
+
+_trim_messages()
 
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
@@ -202,7 +241,7 @@ for idx, msg in enumerate(st.session_state.messages):
                 })
                 st.caption(
                     "Green = origin · Orange = destination · Cyan = your path. "
-                    "Hover for aircraft & duration."
+                    "Hover for airport names, aircraft & duration."
                 )
 
             with tab_time:
@@ -220,9 +259,9 @@ for idx, msg in enumerate(st.session_state.messages):
                         f"- **{leg['from']} → {leg['to']}**  ·  {planes}  ·  {dur}"
                     )
 
-if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DEN)"):
-    if len(prompt) > 500:
-        st.warning("Query is too long. Please keep it under 500 characters.")
+if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or KDTW to KDEN)"):
+    if len(prompt) > MAX_QUERY_LEN:
+        st.warning(f"Query is too long. Please keep it under {MAX_QUERY_LEN} characters.")
         st.stop()
 
     st.session_state.messages.append({"role": "user", "content": prompt})
@@ -233,8 +272,8 @@ if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DE
 
     if not origin or not dest:
         reply = (
-            "I need two airports (IATA code or city name).\n\n"
-            "Try: **How do I get from Detroit to Denver?**  or  **DTW to LAX**"
+            "I need two airports (ICAO/IATA code or city name).\n\n"
+            "Try: **How do I get from Detroit to Denver?**  or  **KDTW to KLAX**"
         )
         routes = None
     else:
@@ -270,5 +309,5 @@ if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or DTW to DE
         "origin": origin,
         "dest": dest,
     })
-
+    _trim_messages()
     st.rerun()

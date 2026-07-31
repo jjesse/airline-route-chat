@@ -1,45 +1,97 @@
 # Security Policy
 
-## Threat Model
+## Threat model
 
-`airline-route-chat` is intended as a **local / home-lab / demo tool** for a silly airline simulation game.  
-It is **not** designed to be exposed to the public internet without additional controls.
+`airline-route-chat` is a **local / home-lab / demo** tool for an airline simulation game.
+It is **not** designed to be exposed on the public internet without extra controls
+(authentication proxy, VPN, or network isolation).
 
-Primary risks we care about:
+### Assets
+
+- Process memory (uploaded CSV, in-memory graph, Streamlit session)
+- Host filesystem (temporary upload files, Docker image layers)
+- CPU (path enumeration on dense graphs)
+
+### Trust boundary
+
+Anyone who can open the Streamlit UI can upload a CSV and run route queries.
+There is **no authentication**. Treat the UI as fully trusted only on a private network.
+
+---
+
+## Risks and mitigations
 
 | Risk | Mitigation |
 |------|------------|
-| Malicious or huge CSV causing memory/CPU exhaustion | Row limit (20k), file size limit (50 MB), airport count limit (2k) |
-| Pathological path-search (combinatorial explosion) | `max_stops` hard-clamped to 0–5 |
-| Injection via airport codes / plane types | Strict sanitization: only `A-Z0-9` for codes; limited charset + length for plane types |
-| Oversized user queries | Query length capped at 500 characters |
-| Visualization resource spikes | Subgraph node count capped for matplotlib |
-| Container privilege escalation | Dockerfile runs as non-root `appuser` (uid 1000) |
-| Dependency vulnerabilities | Pin ranges in `requirements.txt`; run `pip-audit` periodically |
+| Huge / malicious CSV → memory or CPU exhaustion | Upload capped at **50 MB** (Streamlit + `load_graph`); max **20,000** rows; max **2,000** airports |
+| Temp file leftover after upload | Uploads written via `mkstemp` and **deleted** after graph load |
+| Pathological multi-leg search | `max_stops` hard-clamped to **0–5** |
+| Injection via airport / plane strings | Codes: `A-Z0-9` only, length 3–4; plane types length-capped and charset-limited |
+| Oversized chat queries | Cap **500** characters |
+| Unbounded session memory | Chat history trimmed to last **40** messages |
+| Visualization spikes | Subgraph / node counts capped |
+| Filename reflected in UI | Basename only + `html.escape` |
+| Cargo freighter confusion (product, not security) | Cargo types excluded from passenger graph |
+| Container privilege | Runs as non-root **`appuser` (uid 1000)** |
+| Streamlit defaults | Headless; CORS disabled; XSRF protection on; max upload 50 MB; no usage stats |
+| Dependency vulnerabilities | Review with `pip-audit` periodically |
+
+---
 
 ## What this app does **not** do
 
-- No authentication / authorization
-- No file upload endpoint (yet)
-- No external network calls for flight data
-- No shell execution or dynamic code evaluation
-- No persistent storage of user queries beyond Streamlit session state
+- No login / roles / multi-tenant isolation
+- No outbound network calls for live flight data (airport coords/names are **offline** via `airportsdata`)
+- No shell execution, `eval`, or dynamic code loading from CSV content
+- No durable database of user queries (Streamlit session only)
+
+---
+
+## CSV upload notes
+
+Uploads **are** supported in the Streamlit sidebar. They are subject to the same
+`load_graph()` validation as on-disk files:
+
+1. Size ≤ 50 MB (checked before and during load)
+2. Required origin / destination / aircraft columns (flexible header names)
+3. Invalid codes skipped; cargo aircraft rows skipped
+4. Temp file removed after successful or failed parse attempt (`finally`)
+
+Do not treat an uploaded CSV as trusted configuration for anything beyond this app.
+
+---
 
 ## Recommendations
 
-1. **Do not** publish the Streamlit port to the open internet without putting it behind authentication (e.g. OAuth proxy, Cloudflare Access, basic auth, or a VPN).
-2. When adding CSV upload in the future, treat the uploaded file with the same validation already present in `load_graph()`.
-3. Keep dependencies updated:
+1. **Do not** publish port `8501` to the open internet without auth (OAuth proxy,
+   Cloudflare Access, basic auth, Tailscale/VPN, etc.).
+2. Prefer **Docker** so the process is non-root and filesystem is constrained.
+3. Audit dependencies occasionally:
    ```bash
    pip install pip-audit
    pip-audit -r requirements.txt
    ```
-4. Prefer running via Docker so the process is isolated and non-root.
+4. Keep Streamlit and pandas updated when security advisories appear.
+5. If you embed this behind a reverse proxy, terminate TLS there and restrict source IPs when possible.
 
-## Reporting Issues
+---
 
-This is a personal/demo project. If you find a security issue, open a GitHub issue or contact the maintainer directly. Please avoid filing public issues that contain exploit details until a fix is available.
+## Reporting issues
+
+Personal / demo project. Prefer a private report to the maintainer for exploitable
+issues; avoid public PoCs until a fix is available.
+
+---
 
 ## Hardening changelog
 
-- 2026-07-29: Initial security pass — input sanitization, resource limits, non-root Docker user, this document.
+- **2026-07-29** — Initial pass: sanitization, resource limits, non-root Docker, this document.
+- **2026-07-30** — CSV upload added; ICAO support; cargo filter.
+- **2026-07-30 (this review)** —
+  - Early **50 MB** upload rejection in Streamlit
+  - Temp upload files **unlinked** after load
+  - Session message history **bounded**
+  - Filename display escaped
+  - Dockerfile: `headless`, `enableCORS=false`, `enableXsrfProtection=true`,
+    `maxUploadSize=50`, `gatherUsageStats=false`
+  - SECURITY.md updated for upload + current controls
