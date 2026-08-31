@@ -5,7 +5,7 @@ Supports:
 - Shortest path by flight duration (DurationMinutes, or estimated from distance)
 - ICAO (4-letter) primary airport codes; IATA still accepted in chat
 - Game CSV formats (Org/Dest Airport Code, Aircraft, Distance (mi))
-- Cargo/freighter aircraft are excluded from passenger routing
+- Passenger vs cargo routing modes (mutually exclusive aircraft sets)
 
 Security notes:
 - Airport tokens sanitized (A-Z0-9 only, length 3 or 4)
@@ -24,7 +24,13 @@ import networkx as nx
 import pandas as pd
 import plotly.graph_objects as go
 
-from aircraft_types import is_cargo_aircraft  # re-exported for tests
+from aircraft_types import (  # re-exported for tests
+    RouteMode,
+    DEFAULT_ROUTE_MODE,
+    aircraft_allowed_for_mode,
+    is_cargo_aircraft,
+    normalize_route_mode,
+)
 
 MAX_CSV_ROWS = 20_000
 MAX_AIRPORTS = 2_000
@@ -229,12 +235,17 @@ def clamp_max_stops(value: int) -> int:
     return max(0, min(v, MAX_STOPS))
 
 
-def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
-    """Load flights CSV into a directed graph (passenger aircraft only).
+def load_graph(
+    csv_path: str | Path = "flights.csv",
+    mode: RouteMode | str = DEFAULT_ROUTE_MODE,
+) -> nx.DiGraph:
+    """Load flights CSV into a directed graph filtered by route mode.
 
-    Cargo / freighter types (e.g. "B777 Freighter", "B777F") are skipped so
-    they never appear on commercial passenger routes.
+    Modes (mutually exclusive aircraft sets):
+      - passenger: freighters / cargo types are skipped
+      - cargo: only freighter / cargo types are kept
     """
+    route_mode = normalize_route_mode(mode)
     path = Path(csv_path)
     if not path.is_file():
         raise ValueError(f"CSV file not found: {csv_path}")
@@ -285,13 +296,12 @@ def load_graph(csv_path: str | Path = "flights.csv") -> nx.DiGraph:
         plane_raw = str(row[plane_col]).strip()
         if plane_raw.lower() in ("nan", "none", ""):
             plane_raw = "UNKNOWN"
-        # Skip cargo / freighter — never use for passenger routing
-        if is_cargo_aircraft(plane_raw):
+        if not aircraft_allowed_for_mode(plane_raw, route_mode):
             continue
         plane = re.sub(r"[^A-Za-z0-9\- ]", "", plane_raw)[:MAX_PLANE_TYPE_LEN]
         if not plane:
             plane = "UNKNOWN"
-        if is_cargo_aircraft(plane):
+        if not aircraft_allowed_for_mode(plane, route_mode):
             continue
         duration: Optional[float] = None
         distance_val: Optional[float] = None

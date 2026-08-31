@@ -11,6 +11,7 @@ Ask questions in plain English (“How do I get from Detroit to Denver?”) and 
 ## Features
 
 - Multi-leg path finding (fewest stops)
+- **Passenger vs Cargo route modes** (mutually exclusive aircraft sets)
 - **Shortest path by flight time** when `DurationMinutes` is present
 - Natural language + city names (“Detroit”, “Chicago”, “LA” …) as well as IATA codes
 - **Upload your own game/simulation CSV** in the Streamlit sidebar
@@ -38,11 +39,14 @@ pip install -r requirements.txt
 # CLI chat (uses flights.csv in the repo)
 python app.py
 
+# Cargo freighter network only
+python app.py --mode cargo
+
 # Web UI with geographic maps + CSV upload (recommended)
 streamlit run streamlit_app.py
 ```
 
-In the sidebar, upload your airline-sim export to replace the sample network.
+In the sidebar, choose **Passenger** or **Cargo** route type, and optionally upload your airline-sim export to replace the sample network.
 
 ### Docker
 
@@ -109,9 +113,18 @@ If a code is missing from the offline database, that airport simply won’t plot
 
 ---
 
+## Route types
+
+| Mode | Aircraft included |
+|------|-------------------|
+| **Passenger** (default) | Non-freighter types only (B737, A320, …) |
+| **Cargo** | Freighter / cargo types only (B777 Freighter, B777F, 747-8F, …) |
+
+Modes are mutually exclusive. The available airports shrink to wherever that traffic flies in your CSV. Select the mode in the Streamlit sidebar, or pass `--mode cargo` / `--mode passenger` to the CLI.
+
 ## How it works
 
-1. **Load** — CSV → NetworkX directed graph (sample file or upload).
+1. **Load** — CSV → NetworkX directed graph filtered by route mode (sample file or upload).
 2. **Parse** — NLP extracts origin & destination.
 3. **Search** — fewest-stops paths or duration-weighted Dijkstra.
 4. **Visualize** — Plotly `Scattergeo` maps with coordinates from `airportsdata` IATA lookup.

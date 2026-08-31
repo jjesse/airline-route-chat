@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """CLI chat interface for the airline route finder."""
 
+from __future__ import annotations
+
+import argparse
+
 from route_finder import (
     load_graph,
     find_routes,
@@ -8,12 +12,24 @@ from route_finder import (
     format_routes,
     extract_airports,
     clamp_max_stops,
+    DEFAULT_ROUTE_MODE,
 )
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Airline Route Chat (CLI)")
+    parser.add_argument(
+        "--mode",
+        choices=("passenger", "cargo"),
+        default=DEFAULT_ROUTE_MODE,
+        help="Route type: passenger (default) or cargo freighters only",
+    )
+    args = parser.parse_args()
+    mode = args.mode
+
     print("=" * 56)
     print("  Airline Route Chat  (CLI)")
+    print(f"  Mode: {mode}")
     print("  Examples:")
     print("    How do I get from Detroit to Denver?")
     print("    ORD to LAX")
@@ -22,9 +38,9 @@ def main():
     print("=" * 56)
 
     try:
-        G = load_graph("flights.csv")
+        G = load_graph("flights.csv", mode=mode)
         print(
-            f"\nLoaded graph with {G.number_of_nodes()} airports "
+            f"\nLoaded {mode} graph with {G.number_of_nodes()} airports "
             f"and {G.number_of_edges()} flights.\n"
         )
     except Exception as e:
@@ -66,14 +82,17 @@ def main():
         if want_fastest:
             best = find_shortest_by_time(G, origin, dest)
             if not best:
-                print(f"Bot: No timed route found from {origin} to {dest}.")
+                print(f"Bot: No timed {mode} route found from {origin} to {dest}.")
             else:
-                print("Bot: Fastest route by flight time:")
+                print(f"Bot: Fastest {mode} route by flight time:")
                 print(format_routes([best], limit=1))
         else:
             routes = find_routes(G, origin, dest, max_stops=clamp_max_stops(3))
             if not routes:
-                print(f"Bot: No route found from {origin} to {dest} within 3 stops.")
+                print(
+                    f"Bot: No {mode} route found from {origin} to {dest} "
+                    "within 3 stops."
+                )
             else:
                 print("Bot:")
                 print(format_routes(routes, limit=5))

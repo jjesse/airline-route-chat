@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import re
+from typing import Literal
+
+RouteMode = Literal["passenger", "cargo"]
+DEFAULT_ROUTE_MODE: RouteMode = "passenger"
+VALID_ROUTE_MODES = frozenset({"passenger", "cargo"})
 
 # Words that mark an aircraft string as cargo / freighter.
 _CARGO_WORDS = re.compile(
@@ -50,3 +55,23 @@ def is_cargo_aircraft(plane: str) -> bool:
         return True
 
     return False
+
+
+def normalize_route_mode(mode: str | None) -> RouteMode:
+    """Validate and normalize a route mode string."""
+    if mode is None:
+        return DEFAULT_ROUTE_MODE
+    value = str(mode).strip().lower()
+    if value not in VALID_ROUTE_MODES:
+        raise ValueError(
+            f"Invalid route mode {mode!r}; expected one of "
+            f"{sorted(VALID_ROUTE_MODES)}."
+        )
+    return value  # type: ignore[return-value]
+
+
+def aircraft_allowed_for_mode(plane: str, mode: RouteMode | str) -> bool:
+    """Return True if this aircraft belongs in the given route mode graph."""
+    route_mode = normalize_route_mode(mode)
+    is_cargo = is_cargo_aircraft(plane)
+    return is_cargo if route_mode == "cargo" else not is_cargo

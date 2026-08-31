@@ -37,3 +37,11 @@ Chicago,KORD,Miami,KMIA,1197,A321
 Denver,KDEN,Atlanta,KATL,1199,B757
 Seattle,KSEA,Chicago,KORD,1721,B737
 San Francisco,KSFO,Chicago,KORD,1846,A321
+Detroit,KDTW,Chicago,KORD,228,B777 Freighter
+Chicago,KORD,Denver,KDEN,888,B777F
+Detroit,KDTW,Los Angeles,KLAX,1979,747-8 Freighter
+Los Angeles,KLAX,Chicago,KORD,1744,B777 Freighter
+Chicago,KORD,Detroit,KDTW,228,B777F
+Denver,KDEN,Chicago,KORD,888,A330 Cargo
+Los Angeles,KLAX,Denver,KDEN,862,B777 Freighter
+Denver,KDEN,Los Angeles,KLAX,862,747-8F

@@ -32,7 +32,7 @@ There is **no authentication**. Treat the UI as fully trusted only on a private 
 | Unbounded session memory | Chat history trimmed to last **40** messages |
 | Visualization spikes | Subgraph / node counts capped |
 | Filename reflected in UI | Basename only + `html.escape` |
-| Cargo freighter confusion (product, not security) | Cargo types excluded from passenger graph |
+| Cargo freighter confusion (product, not security) | Modes are exclusive: passenger graph skips freighters; cargo graph keeps freighters only |
 | Container privilege | Runs as non-root **`appuser` (uid 1000)** |
 | Streamlit defaults | Headless; CORS disabled; XSRF protection on; max upload 50 MB; no usage stats |
 | Dependency vulnerabilities | Review with `pip-audit` periodically |
@@ -70,7 +70,7 @@ Uploads **are** supported in the Streamlit sidebar. They are subject to the same
 
 1. Size ≤ 50 MB (checked before and during load)
 2. Required origin / destination / aircraft columns (flexible header names)
-3. Invalid codes skipped; cargo aircraft rows skipped
+3. Invalid codes skipped; aircraft rows filtered by route mode (passenger vs cargo)
 4. Temp file removed after successful or failed parse attempt (`finally`)
 5. New file identity is rate-limited (see above)
 
