@@ -30,6 +30,15 @@ from rate_limit import check_query_allowed, check_upload_allowed
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_MESSAGES = 40
 _ROUTE_MODE_LABELS = {"Passenger": "passenger", "Cargo": "cargo"}
+_ROUTE_MODE_OPTIONS = list(_ROUTE_MODE_LABELS.keys())
+_DEFAULT_ROUTE_INDEX = next(
+    (
+        i
+        for i, mode in enumerate(_ROUTE_MODE_LABELS.values())
+        if mode == DEFAULT_ROUTE_MODE
+    ),
+    0,
+)
 
 st.set_page_config(
     page_title="Airline Route Chat",
@@ -109,8 +118,8 @@ with st.sidebar:
 
     route_label = st.radio(
         "Route type",
-        options=list(_ROUTE_MODE_LABELS.keys()),
-        index=0,
+        options=_ROUTE_MODE_OPTIONS,
+        index=_DEFAULT_ROUTE_INDEX,
         horizontal=True,
         help=(
             "Passenger uses non-freighter aircraft only. "
