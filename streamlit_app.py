@@ -22,12 +22,14 @@ from route_finder import (
     clamp_max_stops,
     MAX_STOPS,
     MAX_QUERY_LEN,
+    DEFAULT_ROUTE_MODE,
 )
 from geo_viz import visualize_route_plotly, visualize_full_network_plotly
 from rate_limit import check_query_allowed, check_upload_allowed
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024
 MAX_SESSION_MESSAGES = 40
+_ROUTE_MODE_LABELS = {"Passenger": "passenger", "Cargo": "cargo"}
 
 st.set_page_config(
     page_title="Airline Route Chat",
@@ -51,10 +53,14 @@ def _session_id() -> str:
 
 
 @st.cache_resource
-def get_graph(cache_key: str, csv_bytes: bytes | None = None):
+def get_graph(
+    cache_key: str,
+    csv_bytes: bytes | None = None,
+    mode: str = DEFAULT_ROUTE_MODE,
+):
     """Load graph from default flights.csv or from uploaded bytes."""
     if csv_bytes is None:
-        return load_graph("flights.csv"), "flights.csv (sample)"
+        return load_graph("flights.csv", mode=mode), "flights.csv (sample)"
 
     if len(csv_bytes) > MAX_UPLOAD_BYTES:
         raise ValueError(
@@ -66,13 +72,18 @@ def get_graph(cache_key: str, csv_bytes: bytes | None = None):
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(csv_bytes)
-        G = load_graph(tmp_name)
+        G = load_graph(tmp_name, mode=mode)
         return G, f"uploaded ({len(csv_bytes):,} bytes)"
     finally:
         try:
             os.unlink(tmp_name)
         except OSError:
             pass
+
+
+def _reset_chat_for_network_change() -> None:
+    st.session_state["messages"] = []
+    st.session_state["show_full_network"] = False
 
 
 def _trim_messages() -> None:
@@ -88,9 +99,29 @@ with st.sidebar:
         type=["csv"],
         help=(
             "Game export columns: Org Airport Code, Dest Airport Code, Aircraft, "
-            "Distance (mi). Max 50 MB. Extra columns ignored. Cargo aircraft excluded."
+            "Distance (mi). Max 50 MB. Extra columns ignored. "
+            "Freighters are used only in Cargo mode."
         ),
     )
+
+    st.divider()
+    st.header("Controls")
+
+    route_label = st.radio(
+        "Route type",
+        options=list(_ROUTE_MODE_LABELS.keys()),
+        index=0,
+        horizontal=True,
+        help=(
+            "Passenger uses non-freighter aircraft only. "
+            "Cargo uses freighter / cargo aircraft only."
+        ),
+    )
+    route_mode = _ROUTE_MODE_LABELS[route_label]
+    prev_mode = st.session_state.get("_route_mode")
+    if prev_mode is not None and prev_mode != route_mode:
+        _reset_chat_for_network_change()
+    st.session_state["_route_mode"] = route_mode
 
     if uploaded is not None:
         raw = uploaded.getvalue()
@@ -111,11 +142,10 @@ with st.sidebar:
                 st.stop()
 
             st.session_state["_csv_key"] = cache_key
-            st.session_state["messages"] = []
-            st.session_state["show_full_network"] = False
+            _reset_chat_for_network_change()
             get_graph.clear()
         try:
-            G, source_label = get_graph(cache_key, raw)
+            G, source_label = get_graph(f"{cache_key}:{route_mode}", raw, route_mode)
         except Exception as e:
             st.error(f"Could not load uploaded CSV: {type(e).__name__}: {e}")
             st.stop()
@@ -123,17 +153,17 @@ with st.sidebar:
         st.caption(f"Using **{safe_name}**")
     else:
         try:
-            G, source_label = get_graph("default", None)
+            G, source_label = get_graph(f"default:{route_mode}", None, route_mode)
         except Exception as e:
             st.error(f"Could not load flights.csv: {type(e).__name__}: {e}")
             st.stop()
         st.caption("Using sample `flights.csv` — upload yours above.")
 
-    st.success(f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights")
+    st.success(
+        f"{G.number_of_nodes()} airports  ·  {G.number_of_edges()} flights"
+        f"  ·  {route_label.lower()}"
+    )
     st.caption(f"Source: {html.escape(str(source_label)[:80])}")
-
-    st.divider()
-    st.header("Controls")
 
     max_stops = st.slider(
         "Max stops (for multi-leg search)",
@@ -158,7 +188,7 @@ with st.sidebar:
         - `KORD to KLAX`
         - `fastest Atlanta to Seattle`
         - City names and ICAO/IATA codes both work
-        - Cargo freighters are excluded from routes
+        - **Passenger** mode excludes freighters; **Cargo** mode uses only freighters
         """
     )
     st.caption(
@@ -187,7 +217,8 @@ if "messages" not in st.session_state or not st.session_state.messages:
                 "- KORD to KLAX\n"
                 "- fastest from ATL to SEA\n\n"
                 "Upload **your game CSV** in the sidebar to replace the sample data. "
-                "Pick a route to see it on a **geographic map** and timeline."
+                "Choose **Passenger** or **Cargo** route type, then pick a route "
+                "to see it on a **geographic map** and timeline."
             ),
             "routes": None,
             "origin": None,
@@ -293,23 +324,31 @@ if prompt := st.chat_input("Ask for a route (e.g. Detroit to Denver or KDTW to K
             for w in ("fastest", "shortest", "quickest", "least time", "by time")
         )
 
+        mode_word = "cargo" if route_mode == "cargo" else "passenger"
         if want_fastest:
             best = find_shortest_by_time(G, origin, dest)
             routes = [best] if best else []
             if not routes:
-                reply = f"No timed route found from **{origin}** to **{dest}**."
+                reply = (
+                    f"No timed {mode_word} route found from **{origin}** "
+                    f"to **{dest}**."
+                )
             else:
-                reply = f"Fastest route by flight time from **{origin}** to **{dest}**:"
+                reply = (
+                    f"Fastest {mode_word} route by flight time from "
+                    f"**{origin}** to **{dest}**:"
+                )
         else:
             routes = find_routes(G, origin, dest, max_stops=max_stops)
             if not routes:
                 reply = (
-                    f"No route found from **{origin}** to **{dest}** "
+                    f"No {mode_word} route found from **{origin}** to **{dest}** "
                     f"within {max_stops} stops."
                 )
             else:
                 reply = (
-                    f"Found **{len(routes)}** route(s) from **{origin}** to **{dest}** "
+                    f"Found **{len(routes)}** {mode_word} route(s) from "
+                    f"**{origin}** to **{dest}** "
                     f"(showing up to {show_limit}). Pick one below to explore."
                 )
 
